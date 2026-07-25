@@ -1,15 +1,12 @@
 const { Pool } = require('pg');
-const dns = require('dns');
 require('dotenv').config();
-
-dns.setDefaultResultOrder('ipv4first');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false
   },
-  connectionTimeoutMillis: 10000
+  connectionTimeoutMillis: 15000
 });
 
 pool.on('connect', () => {
