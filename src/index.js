@@ -33,6 +33,10 @@ app.use('/api/becas', auth, becasRoutes);
 
 app.use(errorHandler);
 
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Servidor corriendo en puerto ${PORT}`);
+  });
+}
+
+module.exports = app;
