@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS usuarios (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS inscripciones (
+  id SERIAL PRIMARY KEY,
+  alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+  fecha_inscripcion DATE NOT NULL,
+  ciclo_escolar VARCHAR(50) NOT NULL,
+  grado VARCHAR(50),
+  estado VARCHAR(50) NOT NULL DEFAULT 'activa',
+  monto_inscripcion DECIMAL(10, 2),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS alumnos (
   id SERIAL PRIMARY KEY,
   nombre VARCHAR(255) NOT NULL,
