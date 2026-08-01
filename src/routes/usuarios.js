@@ -7,14 +7,7 @@ const pool = require('../config/database');
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 
-function expiresInToMs(value) {
-  const match = String(value).match(/^(\d+)(s|m|h|d)$/);
-  if (!match) return 24 * 60 * 60 * 1000;
-  const ms = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
-  return parseInt(match[1], 10) * ms[match[2]];
-}
-
-const SESSION_TTL_MS = expiresInToMs(JWT_EXPIRES_IN);
+const SESSION_ACTIVE_LOCK_MS = 3 * 60 * 1000;
 
 router.post('/registro', async (req, res) => {
   try {
@@ -74,7 +67,7 @@ router.post('/login', async (req, res) => {
 
     if (user.last_login_at) {
       const lastLogin = new Date(user.last_login_at).getTime();
-      if (Date.now() - lastLogin < SESSION_TTL_MS) {
+      if (Date.now() - lastLogin < SESSION_ACTIVE_LOCK_MS) {
         return res.status(403).json({
           message: 'Ya existe una sesión activa para este usuario. Cierra sesión en el otro dispositivo o espera a que expire.'
         });
@@ -116,7 +109,7 @@ router.post('/logout', async (req, res) => {
       return res.status(401).json({ message: 'Token de acceso requerido' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true });
     await pool.query('UPDATE usuarios SET last_login_at = NULL WHERE id = $1', [decoded.id]);
     res.json({ message: 'Sesión cerrada' });
   } catch (error) {
