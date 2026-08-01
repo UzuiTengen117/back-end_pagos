@@ -55,8 +55,11 @@ CREATE TABLE IF NOT EXISTS usuarios (
   email VARCHAR(255) UNIQUE NOT NULL,
   password VARCHAR(255) NOT NULL,
   rol VARCHAR(50) NOT NULL CHECK (rol IN ('admin', 'profesor', 'estudiante')),
+  token_version INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS inscripciones (
   id SERIAL PRIMARY KEY,

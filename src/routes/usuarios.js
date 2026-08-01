@@ -24,13 +24,13 @@ router.post('/registro', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     const result = await pool.query(
-      'INSERT INTO usuarios (nombre, username, email, password, rol) VALUES ($1, $2, $3, $4, $5) RETURNING id, nombre, username, email, rol, created_at',
+      'INSERT INTO usuarios (nombre, username, email, password, rol, token_version) VALUES ($1, $2, $3, $4, $5, 0) RETURNING id, nombre, username, email, rol, token_version, created_at',
       [nombre, username, email, hashedPassword, rol]
     );
 
     const user = result.rows[0];
     const token = jwt.sign(
-      { id: user.id, username: user.username, rol: user.rol },
+      { id: user.id, username: user.username, rol: user.rol, token_version: user.token_version },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
@@ -63,8 +63,14 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
 
+    const updated = await pool.query(
+      'UPDATE usuarios SET token_version = token_version + 1 WHERE id = $1 RETURNING token_version',
+      [user.id]
+    );
+    const tokenVersion = updated.rows[0].token_version;
+
     const token = jwt.sign(
-      { id: user.id, username: user.username, rol: user.rol },
+      { id: user.id, username: user.username, rol: user.rol, token_version: tokenVersion },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
