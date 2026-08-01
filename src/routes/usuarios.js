@@ -7,7 +7,14 @@ const pool = require('../config/database');
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 
-const SESSION_ACTIVE_LOCK_MS = 3 * 60 * 1000;
+function expiresInToMs(value) {
+  const match = String(value).match(/^(\d+)(s|m|h|d)$/);
+  if (!match) return 24 * 60 * 60 * 1000;
+  const ms = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
+  return parseInt(match[1], 10) * ms[match[2]];
+}
+
+const SESSION_TTL_MS = expiresInToMs(JWT_EXPIRES_IN);
 
 router.post('/registro', async (req, res) => {
   try {
@@ -67,7 +74,7 @@ router.post('/login', async (req, res) => {
 
     if (user.last_login_at) {
       const lastLogin = new Date(user.last_login_at).getTime();
-      if (Date.now() - lastLogin < SESSION_ACTIVE_LOCK_MS) {
+      if (Date.now() - lastLogin < SESSION_TTL_MS) {
         return res.status(403).json({
           message: 'Ya existe una sesión activa para este usuario. Cierra sesión en el otro dispositivo o espera a que expire.'
         });
