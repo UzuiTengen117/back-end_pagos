@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 
 function expiresInToMs(value) {
   const match = String(value).match(/^(\d+)(s|m|h|d)$/);
