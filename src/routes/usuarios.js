@@ -7,6 +7,15 @@ const pool = require('../config/database');
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
+function expiresInToMs(value) {
+  const match = String(value).match(/^(\d+)(s|m|h|d)$/);
+  if (!match) return 24 * 60 * 60 * 1000;
+  const ms = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
+  return parseInt(match[1], 10) * ms[match[2]];
+}
+
+const SESSION_TTL_MS = expiresInToMs(JWT_EXPIRES_IN);
+
 router.post('/registro', async (req, res) => {
   try {
     const { nombre, username, email, password, rol } = req.body;
@@ -63,8 +72,17 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
 
+    if (user.last_login_at) {
+      const lastLogin = new Date(user.last_login_at).getTime();
+      if (Date.now() - lastLogin < SESSION_TTL_MS) {
+        return res.status(403).json({
+          message: 'Ya existe una sesión activa para este usuario. Cierra sesión en el otro dispositivo o espera a que expire.'
+        });
+      }
+    }
+
     const updated = await pool.query(
-      'UPDATE usuarios SET token_version = token_version + 1 WHERE id = $1 RETURNING token_version',
+      'UPDATE usuarios SET token_version = token_version + 1, last_login_at = NOW() WHERE id = $1 RETURNING token_version',
       [user.id]
     );
     const tokenVersion = updated.rows[0].token_version;
@@ -90,6 +108,22 @@ router.post('/login', async (req, res) => {
   }
 });
 
+router.post('/logout', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+    if (!token) {
+      return res.status(401).json({ message: 'Token de acceso requerido' });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    await pool.query('UPDATE usuarios SET last_login_at = NULL WHERE id = $1', [decoded.id]);
+    res.json({ message: 'Sesión cerrada' });
+  } catch (error) {
+    res.status(401).json({ message: 'Token inválido' });
+  }
+});
+
 router.put('/editar/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -106,7 +140,7 @@ router.put('/editar/:id', async (req, res) => {
     if (password) {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
-      query = 'UPDATE usuarios SET nombre = $1, username = $2, email = $3, password = $4, rol = $5 WHERE id = $6 RETURNING id, nombre, username, email, rol, created_at';
+      query = 'UPDATE usuarios SET nombre = $1, username = $2, email = $3, password = $4, rol = $5, last_login_at = NULL WHERE id = $6 RETURNING id, nombre, username, email, rol, created_at';
       params = [nombre, username, email, hashedPassword, rol, id];
     } else {
       query = 'UPDATE usuarios SET nombre = $1, username = $2, email = $3, rol = $4 WHERE id = $5 RETURNING id, nombre, username, email, rol, created_at';
