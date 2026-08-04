@@ -2,10 +2,16 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
 const pool = require('../config/database');
+const { auth } = require('../middleware/auth');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
+
+const USUARIO_FIELDS = 'id, nombre, primer_apellido, segundo_apellido, username, email, rol, foto, created_at';
 
 function expiresInToMs(value) {
   const match = String(value).match(/^(\d+)(s|m|h|d)$/);
@@ -18,7 +24,7 @@ const SESSION_TTL_MS = expiresInToMs(JWT_EXPIRES_IN);
 
 router.post('/registro', async (req, res) => {
   try {
-    const { nombre, username, email, password, rol } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, username, email, password, rol } = req.body;
 
     if (!nombre || !username || !email || !password || !rol) {
       return res.status(400).json({ message: 'Nombre, username, email, password y rol son requeridos' });
@@ -33,8 +39,9 @@ router.post('/registro', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     const result = await pool.query(
-      'INSERT INTO usuarios (nombre, username, email, password, rol, token_version) VALUES ($1, $2, $3, $4, $5, 0) RETURNING id, nombre, username, email, rol, token_version, created_at',
-      [nombre, username, email, hashedPassword, rol]
+      `INSERT INTO usuarios (nombre, primer_apellido, segundo_apellido, username, email, password, rol, token_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 0) RETURNING ${USUARIO_FIELDS}, token_version`,
+      [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol]
     );
 
     const user = result.rows[0];
@@ -98,9 +105,12 @@ router.post('/login', async (req, res) => {
       usuario: {
         id: user.id,
         nombre: user.nombre,
+        primer_apellido: user.primer_apellido,
+        segundo_apellido: user.segundo_apellido,
         username: user.username,
         email: user.email,
-        rol: user.rol
+        rol: user.rol,
+        foto: user.foto
       }
     });
   } catch (error) {
@@ -124,10 +134,10 @@ router.post('/logout', async (req, res) => {
   }
 });
 
-router.put('/editar/:id', async (req, res) => {
+router.put('/editar/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, username, email, password, rol } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, username, email, password, rol } = req.body;
 
     if (rol) {
       const rolesPermitidos = ['admin', 'profesor', 'estudiante'];
@@ -140,11 +150,11 @@ router.put('/editar/:id', async (req, res) => {
     if (password) {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
-      query = 'UPDATE usuarios SET nombre = $1, username = $2, email = $3, password = $4, rol = $5, last_login_at = NULL WHERE id = $6 RETURNING id, nombre, username, email, rol, created_at';
-      params = [nombre, username, email, hashedPassword, rol, id];
+      query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, last_login_at = NULL WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
+      params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol, id];
     } else {
-      query = 'UPDATE usuarios SET nombre = $1, username = $2, email = $3, rol = $4 WHERE id = $5 RETURNING id, nombre, username, email, rol, created_at';
-      params = [nombre, username, email, rol, id];
+      query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6 WHERE id = $7 RETURNING ${USUARIO_FIELDS}`;
+      params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, rol, id];
     }
 
     const result = await pool.query(query, params);
@@ -160,7 +170,37 @@ router.put('/editar/:id', async (req, res) => {
   }
 });
 
-router.delete('/eliminar/:id', async (req, res) => {
+router.post('/upload-photo', auth, upload.single('foto'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No se envió ninguna imagen' });
+    }
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({ message: 'Formato no válido. Solo se permiten JPG, PNG y WEBP' });
+    }
+
+    const base64 = req.file.buffer.toString('base64');
+    const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
+
+    const userId = req.user.id;
+    const result = await pool.query(
+      `UPDATE usuarios SET foto = $1 WHERE id = $2 RETURNING ${USUARIO_FIELDS}`,
+      [dataUrl, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+
+    res.json({ url: dataUrl, usuario: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/eliminar/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM usuarios WHERE id = $1 RETURNING id', [id]);
@@ -173,19 +213,19 @@ router.delete('/eliminar/:id', async (req, res) => {
   }
 });
 
-router.get('/', async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, nombre, username, email, rol, created_at FROM usuarios');
+    const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT id, nombre, username, email, rol, created_at FROM usuarios WHERE id = $1', [id]);
+    const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios WHERE id = $1`, [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }

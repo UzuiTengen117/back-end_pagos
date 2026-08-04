@@ -105,9 +105,9 @@ router.post('/agregar', async (req, res) => {
     }
 
     if (beca_id) {
-      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1', [beca_id]);
+      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1 AND estado = $2', [beca_id, 'activa']);
       if (becaCheck.rows.length === 0) {
-        return res.status(400).json({ message: 'La beca no existe' });
+        return res.status(400).json({ message: 'La beca no existe o está inactiva' });
       }
     }
 
@@ -138,9 +138,9 @@ router.post('/', async (req, res) => {
     }
 
     if (beca_id) {
-      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1', [beca_id]);
+      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1 AND estado = $2', [beca_id, 'activa']);
       if (becaCheck.rows.length === 0) {
-        return res.status(400).json({ message: 'La beca no existe' });
+        return res.status(400).json({ message: 'La beca no existe o está inactiva' });
       }
     }
 
@@ -163,9 +163,9 @@ router.put('/editar/:id', async (req, res) => {
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
 
     if (beca_id) {
-      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1', [beca_id]);
+      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1 AND estado = $2', [beca_id, 'activa']);
       if (becaCheck.rows.length === 0) {
-        return res.status(400).json({ message: 'La beca no existe' });
+        return res.status(400).json({ message: 'La beca no existe o está inactiva' });
       }
     }
 
@@ -191,9 +191,9 @@ router.put('/:id', async (req, res) => {
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
 
     if (beca_id) {
-      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1', [beca_id]);
+      const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1 AND estado = $2', [beca_id, 'activa']);
       if (becaCheck.rows.length === 0) {
-        return res.status(400).json({ message: 'La beca no existe' });
+        return res.status(400).json({ message: 'La beca no existe o está inactiva' });
       }
     }
 
