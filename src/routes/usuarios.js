@@ -213,6 +213,25 @@ router.delete('/eliminar/:id', auth, async (req, res) => {
   }
 });
 
+router.get('/buscar', async (req, res) => {
+  try {
+    const { username } = req.query;
+    if (!username) {
+      return res.status(400).json({ message: 'El parámetro username es requerido' });
+    }
+    const result = await pool.query(
+      `SELECT ${USUARIO_FIELDS} FROM usuarios WHERE username = $1`,
+      [username]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/', auth, async (req, res) => {
   try {
     const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
