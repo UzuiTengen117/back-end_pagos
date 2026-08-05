@@ -213,6 +213,30 @@ router.delete('/eliminar/:id', auth, async (req, res) => {
   }
 });
 
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { userId, newPassword } = req.body;
+    if (!userId || !newPassword) {
+      return res.status(400).json({ message: 'userId y newPassword son requeridos' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres' });
+    }
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    const result = await pool.query(
+      'UPDATE usuarios SET password = $1, last_login_at = NULL WHERE id = $2 RETURNING id',
+      [hashedPassword, userId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+    res.json({ message: 'Contraseña actualizada exitosamente' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/buscar', async (req, res) => {
   try {
     const { username } = req.query;
