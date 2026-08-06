@@ -137,7 +137,7 @@ router.post('/logout', async (req, res) => {
 router.put('/editar/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, primer_apellido, segundo_apellido, username, email, password, rol } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, username, email, password, rol, foto } = req.body;
 
     if (rol) {
       const rolesPermitidos = ['admin', 'profesor', 'estudiante'];
@@ -146,15 +146,26 @@ router.put('/editar/:id', auth, async (req, res) => {
       }
     }
 
+    const hasFoto = req.body.foto !== undefined;
     let query, params;
     if (password) {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
-      query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, last_login_at = NULL WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
-      params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol, id];
+      if (hasFoto) {
+        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, foto = $8, last_login_at = NULL WHERE id = $9 RETURNING ${USUARIO_FIELDS}`;
+        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol, foto, id];
+      } else {
+        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, last_login_at = NULL WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
+        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol, id];
+      }
     } else {
-      query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6 WHERE id = $7 RETURNING ${USUARIO_FIELDS}`;
-      params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, rol, id];
+      if (hasFoto) {
+        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6, foto = $7 WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
+        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, rol, foto, id];
+      } else {
+        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6 WHERE id = $7 RETURNING ${USUARIO_FIELDS}`;
+        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, rol, id];
+      }
     }
 
     const result = await pool.query(query, params);
