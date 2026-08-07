@@ -7,7 +7,7 @@ const { auth } = require('./middleware/auth');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:4200,http://localhost:3000,https://back-end-pagos-smoky.vercel.app')
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:4200,http://localhost:3000,https://pagos-zeta.vercel.app,https://back-end-pagos-smoky.vercel.app')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
