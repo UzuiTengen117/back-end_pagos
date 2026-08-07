@@ -14,7 +14,7 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 
 const ROLES_PERMITIDOS = ['admin', 'profesor', 'estudiante'];
 
-const USUARIO_FIELDS = 'id, nombre, primer_apellido, segundo_apellido, username, email, rol, foto, created_at';
+const USUARIO_FIELDS = 'id, nombre, primer_apellido, segundo_apellido, username, email, rol, foto, pregunta_secreta, created_at';
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
@@ -34,7 +34,7 @@ function cleanString(value, maxLength) {
 
 router.post('/registro', auth, authorize('admin'), sensitiveLimiter, async (req, res) => {
   try {
-    const { nombre, primer_apellido, segundo_apellido, username, email, password, rol } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, username, email, password, rol, pregunta_secreta, respuesta_secreta } = req.body;
 
     const nombreClean = cleanString(nombre, 255);
     const usernameClean = cleanString(username, 255);
@@ -42,6 +42,8 @@ router.post('/registro', auth, authorize('admin'), sensitiveLimiter, async (req,
     const passwordClean = String(password || '');
     const apellido1 = cleanString(primer_apellido, 255);
     const apellido2 = cleanString(segundo_apellido, 255);
+    const preguntaClean = cleanString(pregunta_secreta, 500);
+    const respuestaClean = cleanString(respuesta_secreta, 500);
 
     if (!nombreClean || !usernameClean || !emailClean || !passwordClean || !rol) {
       return res.status(400).json({ message: 'Nombre, username, email, password y rol son requeridos' });
@@ -55,13 +57,18 @@ router.post('/registro', auth, authorize('admin'), sensitiveLimiter, async (req,
       return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres' });
     }
 
+    if ((preguntaClean && !respuestaClean) || (!preguntaClean && respuestaClean)) {
+      return res.status(400).json({ message: 'La pregunta y la respuesta de seguridad deben ir juntas' });
+    }
+
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(passwordClean, salt);
+    const hashedRespuesta = respuestaClean ? await bcrypt.hash(respuestaClean, salt) : null;
 
     const result = await pool.query(
-      `INSERT INTO usuarios (nombre, primer_apellido, segundo_apellido, username, email, password, rol, token_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 0) RETURNING ${USUARIO_FIELDS}, token_version`,
-      [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, hashedPassword, rol]
+      `INSERT INTO usuarios (nombre, primer_apellido, segundo_apellido, username, email, password, rol, token_version, pregunta_secreta, respuesta_secreta)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9) RETURNING ${USUARIO_FIELDS}, token_version`,
+      [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, hashedPassword, rol, preguntaClean || null, hashedRespuesta]
     );
 
     const user = result.rows[0];
@@ -171,6 +178,71 @@ router.post('/logout', async (req, res) => {
   }
 });
 
+router.get('/pregunta-secreta', sensitiveLimiter, async (req, res) => {
+  try {
+    const username = cleanString(req.query.username, 255);
+    if (!username) {
+      return res.status(400).json({ message: 'El parámetro username es requerido' });
+    }
+    const result = await pool.query(
+      'SELECT pregunta_secreta FROM usuarios WHERE username = $1',
+      [username]
+    );
+    if (result.rows.length === 0 || !result.rows[0].pregunta_secreta) {
+      return res.status(404).json({ message: 'No se encontró una pregunta de seguridad para este usuario' });
+    }
+    res.json({ pregunta: result.rows[0].pregunta_secreta });
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
+router.post('/recuperar-contrasena', sensitiveLimiter, async (req, res) => {
+  try {
+    const username = cleanString(req.body.username, 255);
+    const respuesta = cleanString(req.body.respuesta, 500);
+    const newPassword = String(req.body.newPassword || '');
+
+    if (!username || !respuesta || !newPassword) {
+      return res.status(400).json({ message: 'Username, respuesta y newPassword son requeridos' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres' });
+    }
+
+    const result = await pool.query(
+      'SELECT id, respuesta_secreta, locked_until FROM usuarios WHERE username = $1',
+      [username]
+    );
+    if (result.rows.length === 0) {
+      return res.status(400).json({ message: 'No se pudo restablecer la contraseña' });
+    }
+    const user = result.rows[0];
+    if (!user.respuesta_secreta) {
+      return res.status(400).json({ message: 'No se pudo restablecer la contraseña' });
+    }
+
+    const respuestaValida = await bcrypt.compare(respuesta, user.respuesta_secreta);
+    if (!respuestaValida) {
+      return res.status(400).json({ message: 'La respuesta de seguridad es incorrecta' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    await pool.query(
+      `UPDATE usuarios
+       SET password = $1, token_version = token_version + 1, failed_attempts = 0, locked_until = NULL, last_login_at = NULL
+       WHERE id = $2`,
+      [hashedPassword, user.id]
+    );
+
+    res.json({ message: 'Contraseña restablecida exitosamente' });
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
 router.put('/editar/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
@@ -182,16 +254,27 @@ router.put('/editar/:id', auth, async (req, res) => {
       return res.status(403).json({ message: 'No tienes permiso para editar este usuario' });
     }
 
-    const { nombre, primer_apellido, segundo_apellido, username, email, password, currentPassword, rol, foto } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, username, email, password, currentPassword, rol, foto, pregunta_secreta, respuesta_secreta } = req.body;
 
     const nombreClean = cleanString(nombre, 255);
     const usernameClean = cleanString(username, 255);
     const emailClean = cleanString(email, 255);
     const apellido1 = cleanString(primer_apellido, 255);
     const apellido2 = cleanString(segundo_apellido, 255);
+    const preguntaClean = cleanString(pregunta_secreta, 500);
+    const respuestaClean = cleanString(respuesta_secreta, 500);
 
     if (!nombreClean || !usernameClean || !emailClean) {
       return res.status(400).json({ message: 'Nombre, username y email son requeridos' });
+    }
+
+    if (pregunta_secreta !== undefined) {
+      if (respuesta_secreta === undefined) {
+        return res.status(400).json({ message: 'La pregunta y la respuesta de seguridad deben ir juntas' });
+      }
+      if (!preguntaClean || !respuestaClean) {
+        return res.status(400).json({ message: 'La pregunta y la respuesta de seguridad no pueden estar vacías' });
+      }
     }
 
     const finalRol = isAdmin ? rol : req.user.rol;
@@ -221,27 +304,35 @@ router.put('/editar/:id', auth, async (req, res) => {
       hashedPassword = await bcrypt.hash(password, salt);
     }
 
-    const hasFoto = req.body.foto !== undefined;
-    let query, params;
-    if (hashedPassword) {
-      if (hasFoto) {
-        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, foto = $8, last_login_at = NULL WHERE id = $9 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, hashedPassword, finalRol, foto, targetId];
-      } else {
-        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, last_login_at = NULL WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, hashedPassword, finalRol, targetId];
-      }
-    } else {
-      if (hasFoto) {
-        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6, foto = $7 WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, finalRol, foto, targetId];
-      } else {
-        query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6 WHERE id = $7 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, finalRol, targetId];
-      }
+    let hashedRespuesta;
+    if (respuesta_secreta !== undefined && respuestaClean) {
+      hashedRespuesta = await bcrypt.hash(respuestaClean, 10);
     }
 
-    const result = await pool.query(query, params);
+    const hasFoto = req.body.foto !== undefined;
+    const set = [];
+    const p = [];
+    set.push(`nombre = $${p.length + 1}`); p.push(nombreClean);
+    set.push(`primer_apellido = $${p.length + 1}`); p.push(apellido1 || null);
+    set.push(`segundo_apellido = $${p.length + 1}`); p.push(apellido2 || null);
+    set.push(`username = $${p.length + 1}`); p.push(usernameClean);
+    set.push(`email = $${p.length + 1}`); p.push(emailClean);
+    if (hashedPassword) {
+      set.push(`password = $${p.length + 1}`); p.push(hashedPassword);
+      set.push('last_login_at = NULL');
+    }
+    set.push(`rol = $${p.length + 1}`); p.push(finalRol);
+    if (hasFoto) {
+      set.push(`foto = $${p.length + 1}`); p.push(foto);
+    }
+    if (pregunta_secreta !== undefined) {
+      set.push(`pregunta_secreta = $${p.length + 1}`); p.push(preguntaClean);
+      set.push(`respuesta_secreta = $${p.length + 1}`); p.push(hashedRespuesta);
+    }
+    p.push(targetId);
+    const query = `UPDATE usuarios SET ${set.join(', ')} WHERE id = $${p.length} RETURNING ${USUARIO_FIELDS}`;
+
+    const result = await pool.query(query, p);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
