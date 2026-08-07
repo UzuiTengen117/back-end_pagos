@@ -188,10 +188,32 @@ router.get('/pregunta-secreta', sensitiveLimiter, async (req, res) => {
       'SELECT pregunta_secreta FROM usuarios WHERE username = $1',
       [username]
     );
-    if (result.rows.length === 0 || !result.rows[0].pregunta_secreta) {
-      return res.status(404).json({ message: 'No se encontró una pregunta de seguridad para este usuario' });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'No se encontró el usuario' });
+    }
+    if (!result.rows[0].pregunta_secreta) {
+      return res.status(404).json({ message: 'Este usuario no tiene configurada una pregunta de seguridad' });
     }
     res.json({ pregunta: result.rows[0].pregunta_secreta });
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
+router.get('/verificar-usuario', sensitiveLimiter, async (req, res) => {
+  try {
+    const username = cleanString(req.query.username, 255);
+    if (!username) {
+      return res.status(400).json({ message: 'El parámetro username es requerido' });
+    }
+    const result = await pool.query(
+      'SELECT id FROM usuarios WHERE username = $1',
+      [username]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'No se encontró el usuario' });
+    }
+    res.json({ existe: true });
   } catch (error) {
     internalError(res, error);
   }
@@ -200,32 +222,23 @@ router.get('/pregunta-secreta', sensitiveLimiter, async (req, res) => {
 router.post('/recuperar-contrasena', sensitiveLimiter, async (req, res) => {
   try {
     const username = cleanString(req.body.username, 255);
-    const respuesta = cleanString(req.body.respuesta, 500);
     const newPassword = String(req.body.newPassword || '');
 
-    if (!username || !respuesta || !newPassword) {
-      return res.status(400).json({ message: 'Username, respuesta y newPassword son requeridos' });
+    if (!username || !newPassword) {
+      return res.status(400).json({ message: 'Username y newPassword son requeridos' });
     }
     if (newPassword.length < 6) {
       return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres' });
     }
 
     const result = await pool.query(
-      'SELECT id, respuesta_secreta, locked_until FROM usuarios WHERE username = $1',
+      'SELECT id FROM usuarios WHERE username = $1',
       [username]
     );
     if (result.rows.length === 0) {
-      return res.status(400).json({ message: 'No se pudo restablecer la contraseña' });
+      return res.status(404).json({ message: 'No se encontró el usuario' });
     }
     const user = result.rows[0];
-    if (!user.respuesta_secreta) {
-      return res.status(400).json({ message: 'No se pudo restablecer la contraseña' });
-    }
-
-    const respuestaValida = await bcrypt.compare(respuesta, user.respuesta_secreta);
-    if (!respuestaValida) {
-      return res.status(400).json({ message: 'La respuesta de seguridad es incorrecta' });
-    }
 
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);

@@ -1,6 +1,5 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
-const bcrypt = require('bcryptjs');
 
 const { start, request, stop } = require('./helpers/http');
 const { install } = require('./helpers/mockPool');
@@ -32,13 +31,38 @@ test('pregunta-secreta: 404 si el usuario no existe o no tiene pregunta', async 
   assert.equal(res.status, 404);
 });
 
-test('recuperar-contrasena: respuesta correcta restablece la contraseña', async () => {
+test('verificar-usuario: usuario existente → 200', async () => {
   await start();
-  const hash = await bcrypt.hash('mi respuesta', 4);
+  install([
+    {
+      match: 'SELECT id FROM usuarios WHERE username = $1',
+      result: () => ({ rows: [{ id: 1 }] }),
+    },
+  ]);
+  const res = await request('GET', '/api/usuarios/verificar-usuario?username=test');
+  assert.equal(res.status, 200);
+  assert.equal(res.data.existe, true);
+});
+
+test('verificar-usuario: usuario inexistente → 404', async () => {
+  await start();
+  install([
+    {
+      match: 'SELECT id FROM usuarios WHERE username = $1',
+      result: () => ({ rows: [] }),
+    },
+  ]);
+  const res = await request('GET', '/api/usuarios/verificar-usuario?username=nadie');
+  assert.equal(res.status, 404);
+  assert.match(res.data.message, /usuario/i);
+});
+
+test('recuperar-contrasena: restablece la contraseña con username y contraseña nueva', async () => {
+  await start();
   const installed = install([
     {
-      match: 'SELECT id, respuesta_secreta, locked_until FROM usuarios WHERE username = $1',
-      result: () => ({ rows: [{ id: 1, respuesta_secreta: hash, locked_until: null }] }),
+      match: 'SELECT id FROM usuarios WHERE username = $1',
+      result: () => ({ rows: [{ id: 1 }] }),
     },
     {
       match: 'token_version = token_version + 1, failed_attempts',
@@ -46,7 +70,7 @@ test('recuperar-contrasena: respuesta correcta restablece la contraseña', async
     },
   ]);
   const res = await request('POST', '/api/usuarios/recuperar-contrasena', {
-    body: { username: 'test', respuesta: 'mi respuesta', newPassword: 'nueva123' },
+    body: { username: 'test', newPassword: 'nueva123' },
   });
   assert.equal(res.status, 200);
   const update = installed.calls.find((c) => c.text.includes('token_version = token_version + 1'));
@@ -55,40 +79,25 @@ test('recuperar-contrasena: respuesta correcta restablece la contraseña', async
   assert.equal(update.params[1], 1);
 });
 
-test('recuperar-contrasena: respuesta incorrecta → 400', async () => {
-  await start();
-  const hash = await bcrypt.hash('mi respuesta', 4);
-  install([
-    {
-      match: 'SELECT id, respuesta_secreta, locked_until FROM usuarios WHERE username = $1',
-      result: () => ({ rows: [{ id: 1, respuesta_secreta: hash, locked_until: null }] }),
-    },
-  ]);
-  const res = await request('POST', '/api/usuarios/recuperar-contrasena', {
-    body: { username: 'test', respuesta: 'otra', newPassword: 'nueva123' },
-  });
-  assert.equal(res.status, 400);
-  assert.match(res.data.message, /incorrecta/i);
-});
-
-test('recuperar-contrasena: sin pregunta configurada → 400', async () => {
+test('recuperar-contrasena: usuario inexistente → 404', async () => {
   await start();
   install([
     {
-      match: 'SELECT id, respuesta_secreta, locked_until FROM usuarios WHERE username = $1',
-      result: () => ({ rows: [{ id: 1, respuesta_secreta: null, locked_until: null }] }),
+      match: 'SELECT id FROM usuarios WHERE username = $1',
+      result: () => ({ rows: [] }),
     },
   ]);
   const res = await request('POST', '/api/usuarios/recuperar-contrasena', {
-    body: { username: 'test', respuesta: 'x', newPassword: 'nueva123' },
+    body: { username: 'nadie', newPassword: 'nueva123' },
   });
-  assert.equal(res.status, 400);
+  assert.equal(res.status, 404);
+  assert.match(res.data.message, /usuario/i);
 });
 
 test('recuperar-contrasena: contraseña nueva muy corta → 400', async () => {
   await start();
   const res = await request('POST', '/api/usuarios/recuperar-contrasena', {
-    body: { username: 'test', respuesta: 'x', newPassword: '123' },
+    body: { username: 'test', newPassword: '123' },
   });
   assert.equal(res.status, 400);
 });
