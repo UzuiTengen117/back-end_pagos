@@ -1,8 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { authorize } = require('../middleware/auth');
+const { alumnoScope } = require('../middleware/scope');
+const { internalError } = require('../utils/httpError');
 
-router.get('/disponibles', async (req, res) => {
+router.get('/disponibles', authorize('admin', 'profesor'), async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT a.*, u.nombre AS usuario_nombre, u.email AS usuario_email, u.rol,
@@ -15,83 +18,95 @@ router.get('/disponibles', async (req, res) => {
     `);
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 router.get('/', async (req, res) => {
   try {
+    const scope = alumnoScope(req);
+    const where = scope.clause ? ` WHERE ${scope.clause}` : '';
     const result = await pool.query(`
       SELECT a.*, u.nombre AS usuario_nombre, u.email AS usuario_email, u.rol,
              b.nombre AS beca_nombre, b.porcentaje AS beca_porcentaje
       FROM alumnos a
       JOIN usuarios u ON a.usuario_id = u.id
       LEFT JOIN becas b ON a.beca_id = b.id
+      ${where}
       ORDER BY a.id DESC
-    `);
+    `, scope.params);
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 router.get('/ver', async (req, res) => {
   try {
+    const scope = alumnoScope(req);
+    const where = scope.clause ? ` WHERE ${scope.clause}` : '';
     const result = await pool.query(`
       SELECT a.*, u.nombre AS usuario_nombre, u.email AS usuario_email, u.rol,
              b.nombre AS beca_nombre, b.porcentaje AS beca_porcentaje
       FROM alumnos a
       JOIN usuarios u ON a.usuario_id = u.id
       LEFT JOIN becas b ON a.beca_id = b.id
+      ${where}
       ORDER BY a.id DESC
-    `);
+    `, scope.params);
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 router.get('/ver/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const scope = alumnoScope(req);
+    const where = scope.clause ? ` WHERE ${scope.clause} AND a.id = $2` : ' WHERE a.id = $1';
+    const params = scope.clause ? [...scope.params, id] : [id];
     const result = await pool.query(`
       SELECT a.*, u.nombre AS usuario_nombre, u.email AS usuario_email, u.rol,
              b.nombre AS beca_nombre, b.porcentaje AS beca_porcentaje
       FROM alumnos a
       JOIN usuarios u ON a.usuario_id = u.id
       LEFT JOIN becas b ON a.beca_id = b.id
-      WHERE a.id = $1
-    `, [id]);
+      ${where}
+    `, params);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Alumno no encontrado' });
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const scope = alumnoScope(req);
+    const where = scope.clause ? ` WHERE ${scope.clause} AND a.id = $2` : ' WHERE a.id = $1';
+    const params = scope.clause ? [...scope.params, id] : [id];
     const result = await pool.query(`
       SELECT a.*, u.nombre AS usuario_nombre, u.email AS usuario_email, u.rol,
              b.nombre AS beca_nombre, b.porcentaje AS beca_porcentaje
       FROM alumnos a
       JOIN usuarios u ON a.usuario_id = u.id
       LEFT JOIN becas b ON a.beca_id = b.id
-      WHERE a.id = $1
-    `, [id]);
+      ${where}
+    `, params);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Alumno no encontrado' });
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.post('/agregar', async (req, res) => {
+router.post('/agregar', authorize('admin', 'profesor'), async (req, res) => {
   try {
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
 
@@ -120,11 +135,11 @@ router.post('/agregar', async (req, res) => {
     if (error.code === '23505') {
       return res.status(400).json({ message: 'El email ya está registrado' });
     }
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', authorize('admin', 'profesor'), async (req, res) => {
   try {
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
 
@@ -153,11 +168,11 @@ router.post('/', async (req, res) => {
     if (error.code === '23505') {
       return res.status(400).json({ message: 'El email ya está registrado' });
     }
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.put('/editar/:id', async (req, res) => {
+router.put('/editar/:id', authorize('admin', 'profesor'), async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
@@ -181,11 +196,11 @@ router.put('/editar/:id', async (req, res) => {
     if (error.code === '23505') {
       return res.status(400).json({ message: 'El email ya está registrado' });
     }
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authorize('admin', 'profesor'), async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
@@ -209,11 +224,11 @@ router.put('/:id', async (req, res) => {
     if (error.code === '23505') {
       return res.status(400).json({ message: 'El email ya está registrado' });
     }
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.delete('/eliminar/:id', async (req, res) => {
+router.delete('/eliminar/:id', authorize('admin', 'profesor'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM alumnos WHERE id = $1 RETURNING id', [id]);
@@ -222,11 +237,11 @@ router.delete('/eliminar/:id', async (req, res) => {
     }
     res.json({ message: 'Alumno eliminado' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authorize('admin', 'profesor'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM alumnos WHERE id = $1 RETURNING id', [id]);
@@ -235,7 +250,7 @@ router.delete('/:id', async (req, res) => {
     }
     res.json({ message: 'Alumno eliminado' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 

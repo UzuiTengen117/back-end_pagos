@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+const { JWT_SECRET } = require('../config/security');
 
 const auth = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -44,4 +43,4 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { auth, authorize };
+module.exports = { auth, authorize, JWT_SECRET };

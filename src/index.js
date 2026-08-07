@@ -7,8 +7,25 @@ const { auth } = require('./middleware/auth');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:4200,http://localhost:3000,https://back-end-pagos-smoky.vercel.app')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return cb(null, true);
+      }
+      const error = new Error('Origen no permitido');
+      error.status = 403;
+      cb(error);
+    },
+  })
+);
+
+app.use(express.json({ limit: '1mb' }));
 
 const testRoutes = require('./routes/test');
 const pagosRoutes = require('./routes/pagos');

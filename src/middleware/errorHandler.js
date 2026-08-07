@@ -1,9 +1,10 @@
 const errorHandler = (err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ 
-    error: 'Error interno del servidor',
-    message: err.message 
-  });
+  const status = err.status || 500;
+  if (status >= 500) {
+    console.error(err.stack);
+    return res.status(status).json({ error: 'Error interno del servidor' });
+  }
+  res.status(status).json({ error: err.message || 'Solicitud inválida' });
 };
 
 module.exports = errorHandler;

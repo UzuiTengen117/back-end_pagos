@@ -1,13 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { authorize } = require('../middleware/auth');
+const { internalError } = require('../utils/httpError');
 
 router.get('/', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM tipos_pago ORDER BY id DESC');
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -16,7 +18,7 @@ router.get('/ver', async (req, res) => {
     const result = await pool.query('SELECT * FROM tipos_pago ORDER BY id DESC');
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -29,7 +31,7 @@ router.get('/ver/:id', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -42,11 +44,11 @@ router.get('/:id', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.post('/agregar', async (req, res) => {
+router.post('/agregar', authorize('admin'), async (req, res) => {
   try {
     const { concepto, monto, tipo } = req.body;
 
@@ -65,11 +67,11 @@ router.post('/agregar', async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', authorize('admin'), async (req, res) => {
   try {
     const { concepto, monto, tipo } = req.body;
 
@@ -88,11 +90,11 @@ router.post('/', async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.put('/editar/:id', async (req, res) => {
+router.put('/editar/:id', authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const { concepto, monto, tipo } = req.body;
@@ -111,11 +113,11 @@ router.put('/editar/:id', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const { concepto, monto, tipo } = req.body;
@@ -134,11 +136,11 @@ router.put('/:id', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.delete('/eliminar/:id', async (req, res) => {
+router.delete('/eliminar/:id', authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM tipos_pago WHERE id = $1 RETURNING id', [id]);
@@ -147,11 +149,11 @@ router.delete('/eliminar/:id', async (req, res) => {
     }
     res.json({ message: 'Tipo de pago eliminado' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM tipos_pago WHERE id = $1 RETURNING id', [id]);
@@ -160,7 +162,7 @@ router.delete('/:id', async (req, res) => {
     }
     res.json({ message: 'Tipo de pago eliminado' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 

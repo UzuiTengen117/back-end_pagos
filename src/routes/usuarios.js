@@ -4,14 +4,20 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const pool = require('../config/database');
-const { auth } = require('../middleware/auth');
+const { auth, authorize, JWT_SECRET } = require('../middleware/auth');
+const { loginLimiter, sensitiveLimiter } = require('../middleware/rateLimiter');
+const { internalError } = require('../utils/httpError');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 
+const ROLES_PERMITIDOS = ['admin', 'profesor', 'estudiante'];
+
 const USUARIO_FIELDS = 'id, nombre, primer_apellido, segundo_apellido, username, email, rol, foto, created_at';
+
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCK_MINUTES = 15;
 
 function expiresInToMs(value) {
   const match = String(value).match(/^(\d+)(s|m|h|d)$/);
@@ -22,26 +28,40 @@ function expiresInToMs(value) {
 
 const SESSION_TTL_MS = expiresInToMs(JWT_EXPIRES_IN);
 
-router.post('/registro', async (req, res) => {
+function cleanString(value, maxLength) {
+  return String(value || '').trim().slice(0, maxLength);
+}
+
+router.post('/registro', auth, authorize('admin'), sensitiveLimiter, async (req, res) => {
   try {
     const { nombre, primer_apellido, segundo_apellido, username, email, password, rol } = req.body;
 
-    if (!nombre || !username || !email || !password || !rol) {
+    const nombreClean = cleanString(nombre, 255);
+    const usernameClean = cleanString(username, 255);
+    const emailClean = cleanString(email, 255);
+    const passwordClean = String(password || '');
+    const apellido1 = cleanString(primer_apellido, 255);
+    const apellido2 = cleanString(segundo_apellido, 255);
+
+    if (!nombreClean || !usernameClean || !emailClean || !passwordClean || !rol) {
       return res.status(400).json({ message: 'Nombre, username, email, password y rol son requeridos' });
     }
 
-    const rolesPermitidos = ['admin', 'profesor', 'estudiante'];
-    if (!rolesPermitidos.includes(rol)) {
+    if (!ROLES_PERMITIDOS.includes(rol)) {
       return res.status(400).json({ message: 'Rol no válido. Roles permitidos: admin, profesor, estudiante' });
     }
 
+    if (passwordClean.length < 6) {
+      return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres' });
+    }
+
     const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(passwordClean, salt);
 
     const result = await pool.query(
       `INSERT INTO usuarios (nombre, primer_apellido, segundo_apellido, username, email, password, rol, token_version)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 0) RETURNING ${USUARIO_FIELDS}, token_version`,
-      [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol]
+      [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, hashedPassword, rol]
     );
 
     const user = result.rows[0];
@@ -56,28 +76,45 @@ router.post('/registro', async (req, res) => {
     if (error.code === '23505') {
       return res.status(400).json({ message: 'El username o email ya está registrado' });
     }
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const username = cleanString(req.body.username, 255);
+    const password = String(req.body.password || '');
 
     if (!username || !password) {
       return res.status(400).json({ message: 'Username y password son requeridos' });
     }
 
     const result = await pool.query('SELECT * FROM usuarios WHERE username = $1', [username]);
-    if (result.rows.length === 0) {
+    const user = result.rows[0];
+
+    if (user && user.locked_until) {
+      const lockedUntil = new Date(user.locked_until).getTime();
+      if (lockedUntil > Date.now()) {
+        return res.status(429).json({ message: 'Demasiados intentos fallidos. Intenta de nuevo más tarde.' });
+      }
+      await pool.query('UPDATE usuarios SET failed_attempts = 0, locked_until = NULL WHERE id = $1', [user.id]);
+    }
+
+    const validPassword = user ? await bcrypt.compare(password, user.password) : false;
+
+    if (!user || !validPassword) {
+      if (user) {
+        await pool.query(
+          `UPDATE usuarios SET failed_attempts = failed_attempts + 1,
+             locked_until = CASE WHEN failed_attempts + 1 >= $2 THEN NOW() + ($3 || ' minutes')::interval ELSE locked_until END
+           WHERE id = $1`,
+          [user.id, MAX_FAILED_ATTEMPTS, LOCK_MINUTES]
+        );
+      }
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
 
-    const user = result.rows[0];
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      return res.status(401).json({ message: 'Credenciales inválidas' });
-    }
+    await pool.query('UPDATE usuarios SET failed_attempts = 0, locked_until = NULL WHERE id = $1', [user.id]);
 
     if (user.last_login_at) {
       const lastLogin = new Date(user.last_login_at).getTime();
@@ -114,7 +151,7 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -137,34 +174,70 @@ router.post('/logout', async (req, res) => {
 router.put('/editar/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, primer_apellido, segundo_apellido, username, email, password, rol, foto } = req.body;
+    const targetId = Number(id);
+    const isAdmin = req.user.rol === 'admin';
+    const isSelf = targetId === req.user.id;
 
-    if (rol) {
-      const rolesPermitidos = ['admin', 'profesor', 'estudiante'];
-      if (!rolesPermitidos.includes(rol)) {
-        return res.status(400).json({ message: 'Rol no válido. Roles permitidos: admin, profesor, estudiante' });
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({ message: 'No tienes permiso para editar este usuario' });
+    }
+
+    const { nombre, primer_apellido, segundo_apellido, username, email, password, currentPassword, rol, foto } = req.body;
+
+    const nombreClean = cleanString(nombre, 255);
+    const usernameClean = cleanString(username, 255);
+    const emailClean = cleanString(email, 255);
+    const apellido1 = cleanString(primer_apellido, 255);
+    const apellido2 = cleanString(segundo_apellido, 255);
+
+    if (!nombreClean || !usernameClean || !emailClean) {
+      return res.status(400).json({ message: 'Nombre, username y email son requeridos' });
+    }
+
+    const finalRol = isAdmin ? rol : req.user.rol;
+    if (finalRol && !ROLES_PERMITIDOS.includes(finalRol)) {
+      return res.status(400).json({ message: 'Rol no válido. Roles permitidos: admin, profesor, estudiante' });
+    }
+
+    let hashedPassword;
+    if (password) {
+      if (!isAdmin) {
+        if (!currentPassword) {
+          return res.status(400).json({ message: 'Debes ingresar tu contraseña actual para cambiarla' });
+        }
+        const userRow = await pool.query('SELECT password FROM usuarios WHERE id = $1', [targetId]);
+        if (userRow.rows.length === 0) {
+          return res.status(404).json({ message: 'Usuario no encontrado' });
+        }
+        const valid = await bcrypt.compare(currentPassword, userRow.rows[0].password);
+        if (!valid) {
+          return res.status(400).json({ message: 'La contraseña actual es incorrecta' });
+        }
       }
+      if (String(password).length < 6) {
+        return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres' });
+      }
+      const salt = await bcrypt.genSalt(10);
+      hashedPassword = await bcrypt.hash(password, salt);
     }
 
     const hasFoto = req.body.foto !== undefined;
     let query, params;
-    if (password) {
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(password, salt);
+    if (hashedPassword) {
       if (hasFoto) {
         query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, foto = $8, last_login_at = NULL WHERE id = $9 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol, foto, id];
+        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, hashedPassword, finalRol, foto, targetId];
       } else {
         query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, password = $6, rol = $7, last_login_at = NULL WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, hashedPassword, rol, id];
+        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, hashedPassword, finalRol, targetId];
       }
     } else {
       if (hasFoto) {
         query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6, foto = $7 WHERE id = $8 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, rol, foto, id];
+        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, finalRol, foto, targetId];
       } else {
         query = `UPDATE usuarios SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, username = $4, email = $5, rol = $6 WHERE id = $7 RETURNING ${USUARIO_FIELDS}`;
-        params = [nombre, primer_apellido || null, segundo_apellido || null, username, email, rol, id];
+        params = [nombreClean, apellido1 || null, apellido2 || null, usernameClean, emailClean, finalRol, targetId];
       }
     }
 
@@ -177,7 +250,7 @@ router.put('/editar/:id', auth, async (req, res) => {
     if (error.code === '23505') {
       return res.status(400).json({ message: 'El username o email ya está registrado' });
     }
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -207,36 +280,40 @@ router.post('/upload-photo', auth, upload.single('foto'), async (req, res) => {
 
     res.json({ url: dataUrl, usuario: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.delete('/eliminar/:id', auth, async (req, res) => {
+router.delete('/eliminar/:id', auth, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM usuarios WHERE id = $1 RETURNING id', [id]);
+    const targetId = Number(id);
+    if (targetId === req.user.id) {
+      return res.status(400).json({ message: 'No puedes eliminar tu propia cuenta' });
+    }
+    const result = await pool.query('DELETE FROM usuarios WHERE id = $1 RETURNING id', [targetId]);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
     res.json({ message: 'Usuario eliminado' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', auth, authorize('admin'), sensitiveLimiter, async (req, res) => {
   try {
     const { userId, newPassword } = req.body;
     if (!userId || !newPassword) {
       return res.status(400).json({ message: 'userId y newPassword son requeridos' });
     }
-    if (newPassword.length < 6) {
+    if (String(newPassword).length < 6) {
       return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres' });
     }
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
     const result = await pool.query(
-      'UPDATE usuarios SET password = $1, last_login_at = NULL WHERE id = $2 RETURNING id',
+      'UPDATE usuarios SET password = $1, last_login_at = NULL, failed_attempts = 0, locked_until = NULL WHERE id = $2 RETURNING id',
       [hashedPassword, userId]
     );
     if (result.rows.length === 0) {
@@ -244,11 +321,11 @@ router.post('/reset-password', async (req, res) => {
     }
     res.json({ message: 'Contraseña actualizada exitosamente' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
-router.get('/buscar', async (req, res) => {
+router.get('/buscar', auth, authorize('admin'), async (req, res) => {
   try {
     const { username } = req.query;
     if (!username) {
@@ -263,29 +340,37 @@ router.get('/buscar', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 router.get('/', auth, async (req, res) => {
   try {
-    const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
+    if (req.user.rol === 'admin') {
+      const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
+      return res.json(result.rows);
+    }
+    const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios WHERE id = $1`, [req.user.id]);
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 router.get('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios WHERE id = $1`, [id]);
+    const targetId = Number(id);
+    if (req.user.rol !== 'admin' && targetId !== req.user.id) {
+      return res.status(403).json({ message: 'No tienes permiso para ver este usuario' });
+    }
+    const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios WHERE id = $1`, [targetId]);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
