@@ -85,6 +85,7 @@ test('escritura de datos: estudiante → 403; profesor con permisos por defecto 
       match: 'SELECT id FROM usuarios WHERE id = $1',
       result: () => ({ rows: [{ id: 5 }] }),
     },
+    { match: 'FROM alumnos WHERE usuario_id = $1', result: () => ({ rows: [] }) },
     { match: 'INSERT INTO alumnos', result: () => ({ rows: [{ id: 1 }] }) },
     { match: 'INSERT INTO becas', result: () => ({ rows: [{ id: 1 }] }) },
     { match: 'INSERT INTO tipos_pago', result: () => ({ rows: [{ id: 1 }] }) },

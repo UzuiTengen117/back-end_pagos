@@ -13,6 +13,7 @@ function token(rol, id = 1) {
 
 const PERMISOS_VACIO = { match: 'FROM permisos_usuario WHERE usuario_id = $1', result: () => ({ rows: [] }) };
 const USUARIO_EXISTE = { match: 'SELECT id FROM usuarios WHERE id = $1', result: () => ({ rows: [{ id: 5 }] }) };
+const ALUMNO_NO_EXISTE = { match: 'FROM alumnos WHERE usuario_id = $1', result: () => ({ rows: [] }) };
 
 const BODY_VALIDO = {
   nombre: 'A',
@@ -25,7 +26,7 @@ const BODY_VALIDO = {
 
 test('crear alumno sin sede → 400', async () => {
   await start();
-  install([PERMISOS_VACIO, USUARIO_EXISTE, { match: 'INSERT INTO alumnos', result: () => ({ rows: [] }) }]);
+  install([PERMISOS_VACIO, USUARIO_EXISTE, ALUMNO_NO_EXISTE, { match: 'INSERT INTO alumnos', result: () => ({ rows: [] }) }]);
   const { sede, ...sinSede } = BODY_VALIDO;
   const res = await request('POST', '/api/alumnos', {
     token: token('profesor'),
@@ -37,7 +38,7 @@ test('crear alumno sin sede → 400', async () => {
 
 test('crear alumno con sede inválida → 400', async () => {
   await start();
-  install([PERMISOS_VACIO, USUARIO_EXISTE, { match: 'INSERT INTO alumnos', result: () => ({ rows: [] }) }]);
+  install([PERMISOS_VACIO, USUARIO_EXISTE, ALUMNO_NO_EXISTE, { match: 'INSERT INTO alumnos', result: () => ({ rows: [] }) }]);
   const res = await request('POST', '/api/alumnos', {
     token: token('profesor'),
     body: { ...BODY_VALIDO, sede: 'Coyoacan' },
@@ -51,6 +52,7 @@ test('crear alumno con sede válida → 201 e INSERT incluye sede', async () => 
   const { calls } = install([
     PERMISOS_VACIO,
     USUARIO_EXISTE,
+    ALUMNO_NO_EXISTE,
     { match: 'INSERT INTO alumnos', result: () => ({ rows: [{ id: 1, ...BODY_VALIDO }] }) },
   ]);
   const res = await request('POST', '/api/alumnos', {
@@ -61,6 +63,45 @@ test('crear alumno con sede válida → 201 e INSERT incluye sede', async () => 
   const insert = calls.find((c) => c.text.includes('INSERT INTO alumnos'));
   assert.ok(insert.text.includes('sede'), 'el INSERT debe incluir la columna sede');
   assert.ok(insert.params.includes('Morelos'), 'el valor de sede debe viajar parametrizado');
+});
+
+test('crear alumno con usuario ya registrado → 400', async () => {
+  await start();
+  const ALUMNO_DUPLICADO = { match: 'FROM alumnos WHERE usuario_id = $1', result: () => ({ rows: [{ id: 9 }] }) };
+  install([PERMISOS_VACIO, USUARIO_EXISTE, ALUMNO_DUPLICADO, { match: 'INSERT INTO alumnos', result: () => ({ rows: [] }) }]);
+  const res = await request('POST', '/api/alumnos', {
+    token: token('profesor'),
+    body: { ...BODY_VALIDO, sede: 'Progreso' },
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.data.message, /ya existe un alumno/i);
+});
+
+test('editar alumno con usuario ya usado por otro alumno → 400', async () => {
+  await start();
+  const ALUMNO_DUPLICADO = { match: 'FROM alumnos WHERE usuario_id = $1 AND id <> $2', result: () => ({ rows: [{ id: 9 }] }) };
+  install([PERMISOS_VACIO, ALUMNO_DUPLICADO, { match: 'UPDATE alumnos', result: () => ({ rows: [] }) }]);
+  const res = await request('PUT', '/api/alumnos/editar/1', {
+    token: token('profesor'),
+    body: { ...BODY_VALIDO, sede: 'Progreso' },
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.data.message, /ya existe un alumno/i);
+});
+
+test('editar alumno manteniendo su mismo usuario → 200', async () => {
+  await start();
+  const ALUMNO_SIN_OTRO = { match: 'FROM alumnos WHERE usuario_id = $1 AND id <> $2', result: () => ({ rows: [] }) };
+  install([
+    PERMISOS_VACIO,
+    ALUMNO_SIN_OTRO,
+    { match: 'UPDATE alumnos', result: () => ({ rows: [{ id: 1, ...BODY_VALIDO }] }) },
+  ]);
+  const res = await request('PUT', '/api/alumnos/editar/1', {
+    token: token('profesor'),
+    body: { ...BODY_VALIDO, sede: 'Progreso' },
+  });
+  assert.equal(res.status, 200);
 });
 
 test('editar alumno con sede inválida → 400', async () => {
@@ -78,6 +119,7 @@ test('editar alumno con sede válida → 200 y UPDATE incluye sede', async () =>
   await start();
   const { calls } = install([
     PERMISOS_VACIO,
+    ALUMNO_NO_EXISTE,
     { match: 'UPDATE alumnos', result: () => ({ rows: [{ id: 1, ...BODY_VALIDO }] }) },
   ]);
   const res = await request('PUT', '/api/alumnos/editar/1', {

@@ -124,6 +124,11 @@ router.post('/agregar', permite('alumnos', 'crear'), async (req, res) => {
       return res.status(400).json({ message: 'El usuario no existe' });
     }
 
+    const alumnoCheck = await pool.query('SELECT id FROM alumnos WHERE usuario_id = $1', [usuario_id]);
+    if (alumnoCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'Ya existe un alumno registrado con ese usuario' });
+    }
+
     if (beca_id) {
       const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1 AND estado = $2', [beca_id, 'activa']);
       if (becaCheck.rows.length === 0) {
@@ -159,6 +164,11 @@ router.post('/', permite('alumnos', 'crear'), async (req, res) => {
     const userCheck = await pool.query('SELECT id FROM usuarios WHERE id = $1', [usuario_id]);
     if (userCheck.rows.length === 0) {
       return res.status(400).json({ message: 'El usuario no existe' });
+    }
+
+    const alumnoCheck = await pool.query('SELECT id FROM alumnos WHERE usuario_id = $1', [usuario_id]);
+    if (alumnoCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'Ya existe un alumno registrado con ese usuario' });
     }
 
     if (beca_id) {
@@ -197,6 +207,11 @@ router.put('/editar/:id', permite('alumnos', 'editar'), async (req, res) => {
       }
     }
 
+    const alumnoCheck = await pool.query('SELECT id FROM alumnos WHERE usuario_id = $1 AND id <> $2', [usuario_id, id]);
+    if (alumnoCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'Ya existe un alumno registrado con ese usuario' });
+    }
+
     const result = await pool.query(
       'UPDATE alumnos SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, usuario_id = $4, email = $5, telefono = $6, grado = $7, beca_id = $8, sede = $9 WHERE id = $10 RETURNING *',
       [nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id || null, sede, id]
@@ -227,6 +242,11 @@ router.put('/:id', permite('alumnos', 'editar'), async (req, res) => {
       if (becaCheck.rows.length === 0) {
         return res.status(400).json({ message: 'La beca no existe o está inactiva' });
       }
+    }
+
+    const alumnoCheck = await pool.query('SELECT id FROM alumnos WHERE usuario_id = $1 AND id <> $2', [usuario_id, id]);
+    if (alumnoCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'Ya existe un alumno registrado con ese usuario' });
     }
 
     const result = await pool.query(
