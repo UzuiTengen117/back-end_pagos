@@ -76,14 +76,18 @@ test('GET /becas y /tipos-pago: catálogo accesible sin filtrar por usuario', as
   assert.ok(!precios.text.includes('usuario_id'));
 });
 
-test('escritura de datos: estudiante → 403; profesor puede alumnos; profesor NO becas', async () => {
+test('escritura de datos: estudiante → 403; profesor con permisos por defecto puede crear', async () => {
   await start();
+  const PERMISOS_VACIO = { match: 'FROM permisos_usuario WHERE usuario_id = $1', result: () => ({ rows: [] }) };
   install([
+    PERMISOS_VACIO,
     {
       match: 'SELECT id FROM usuarios WHERE id = $1',
       result: () => ({ rows: [{ id: 5 }] }),
     },
     { match: 'INSERT INTO alumnos', result: () => ({ rows: [{ id: 1 }] }) },
+    { match: 'INSERT INTO becas', result: () => ({ rows: [{ id: 1 }] }) },
+    { match: 'INSERT INTO tipos_pago', result: () => ({ rows: [{ id: 1 }] }) },
   ]);
 
   const pagoEst = await request('POST', '/api/pagos', {
@@ -102,13 +106,19 @@ test('escritura de datos: estudiante → 403; profesor puede alumnos; profesor N
     token: token('profesor'),
     body: { nombre: 'Beca', porcentaje: 25 },
   });
-  assert.equal(becaProf.status, 403);
+  assert.equal(becaProf.status, 201);
 
   const precioProf = await request('POST', '/api/tipos-pago', {
     token: token('profesor'),
     body: { concepto: 'X', monto: 100, tipo: 'otro' },
   });
-  assert.equal(precioProf.status, 403);
+  assert.equal(precioProf.status, 201);
+
+  const becaEst = await request('POST', '/api/becas', {
+    token: token('estudiante'),
+    body: { nombre: 'Beca', porcentaje: 25 },
+  });
+  assert.equal(becaEst.status, 403, 'un estudiante nunca crea becas');
 });
 
 test('GET /api/usuarios: admin ve el listado completo', async () => {

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
-const { authorize } = require('../middleware/auth');
+const { permite } = require('../middleware/permisos');
 const { internalError } = require('../utils/httpError');
 
 router.get('/', async (req, res) => {
@@ -48,7 +48,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.post('/agregar', authorize('admin'), async (req, res) => {
+router.post('/agregar', permite('precios', 'crear'), async (req, res) => {
   try {
     const { concepto, monto, tipo } = req.body;
 
@@ -71,7 +71,7 @@ router.post('/agregar', authorize('admin'), async (req, res) => {
   }
 });
 
-router.post('/', authorize('admin'), async (req, res) => {
+router.post('/', permite('precios', 'crear'), async (req, res) => {
   try {
     const { concepto, monto, tipo } = req.body;
 
@@ -94,7 +94,7 @@ router.post('/', authorize('admin'), async (req, res) => {
   }
 });
 
-router.put('/editar/:id', authorize('admin'), async (req, res) => {
+router.put('/editar/:id', permite('precios', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
     const { concepto, monto, tipo } = req.body;
@@ -117,7 +117,7 @@ router.put('/editar/:id', authorize('admin'), async (req, res) => {
   }
 });
 
-router.put('/:id', authorize('admin'), async (req, res) => {
+router.put('/:id', permite('precios', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
     const { concepto, monto, tipo } = req.body;
@@ -140,7 +140,7 @@ router.put('/:id', authorize('admin'), async (req, res) => {
   }
 });
 
-router.delete('/eliminar/:id', authorize('admin'), async (req, res) => {
+router.delete('/eliminar/:id', permite('precios', 'eliminar'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM tipos_pago WHERE id = $1 RETURNING id', [id]);
@@ -153,7 +153,7 @@ router.delete('/eliminar/:id', authorize('admin'), async (req, res) => {
   }
 });
 
-router.delete('/:id', authorize('admin'), async (req, res) => {
+router.delete('/:id', permite('precios', 'eliminar'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM tipos_pago WHERE id = $1 RETURNING id', [id]);

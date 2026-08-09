@@ -93,3 +93,26 @@ CREATE TABLE IF NOT EXISTS alumnos (
   beca_id INTEGER REFERENCES becas(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS solicitudes_reembolso (
+  id SERIAL PRIMARY KEY,
+  alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+  pago_id INTEGER REFERENCES pagos(id) ON DELETE SET NULL,
+  comprobante_id INTEGER REFERENCES comprobantes(id) ON DELETE SET NULL,
+  monto DECIMAL(10, 2) NOT NULL,
+  motivo TEXT NOT NULL,
+  estado VARCHAR(50) NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'aprobada', 'rechazada')),
+  motivo_rechazo TEXT,
+  revisado_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+  creada_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS permisos_usuario (
+  id SERIAL PRIMARY KEY,
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  modulo VARCHAR(100) NOT NULL,
+  accion VARCHAR(100) NOT NULL,
+  UNIQUE (usuario_id, modulo, accion)
+);

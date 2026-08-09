@@ -6,6 +6,11 @@ const multer = require('multer');
 const pool = require('../config/database');
 const { auth, authorize, JWT_SECRET } = require('../middleware/auth');
 const { loginLimiter, sensitiveLimiter } = require('../middleware/rateLimiter');
+const {
+  tipoDeRol,
+  puedeGestionarTipo,
+  obtenerPermisosUsuario,
+} = require('../middleware/permisos');
 const { internalError } = require('../utils/httpError');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
@@ -32,7 +37,7 @@ function cleanString(value, maxLength) {
   return String(value || '').trim().slice(0, maxLength);
 }
 
-router.post('/registro', auth, authorize('admin'), sensitiveLimiter, async (req, res) => {
+router.post('/registro', auth, sensitiveLimiter, async (req, res) => {
   try {
     const { nombre, primer_apellido, segundo_apellido, username, email, password, rol, pregunta_secreta, respuesta_secreta } = req.body;
 
@@ -51,6 +56,12 @@ router.post('/registro', auth, authorize('admin'), sensitiveLimiter, async (req,
 
     if (!ROLES_PERMITIDOS.includes(rol)) {
       return res.status(400).json({ message: 'Rol no válido. Roles permitidos: admin, profesor, estudiante' });
+    }
+
+    const tipoNuevo = tipoDeRol(rol);
+    const puedeCrear = await puedeGestionarTipo(req.user.id, req.user.rol, 'crear', tipoNuevo);
+    if (!puedeCrear) {
+      return res.status(403).json({ message: 'No tienes permiso para crear usuarios de este tipo' });
     }
 
     if (passwordClean.length < 6) {
@@ -263,11 +274,36 @@ router.put('/editar/:id', auth, async (req, res) => {
     const isAdmin = req.user.rol === 'admin';
     const isSelf = targetId === req.user.id;
 
-    if (!isAdmin && !isSelf) {
-      return res.status(403).json({ message: 'No tienes permiso para editar este usuario' });
+    const { nombre, primer_apellido, segundo_apellido, username, email, password, currentPassword, rol, foto, pregunta_secreta, respuesta_secreta } = req.body;
+
+    if (rol && !ROLES_PERMITIDOS.includes(rol)) {
+      return res.status(400).json({ message: 'Rol no válido. Roles permitidos: admin, profesor, estudiante' });
     }
 
-    const { nombre, primer_apellido, segundo_apellido, username, email, password, currentPassword, rol, foto, pregunta_secreta, respuesta_secreta } = req.body;
+    // Solo quien gestiona ese tipo de usuario puede editar a otros.
+    let rolActual = null;
+    if (!isSelf) {
+      const targetRow = await pool.query('SELECT rol FROM usuarios WHERE id = $1', [targetId]);
+      if (targetRow.rows.length === 0) {
+        return res.status(404).json({ message: 'Usuario no encontrado' });
+      }
+      rolActual = targetRow.rows[0].rol;
+      const tipoActual = tipoDeRol(rolActual);
+      const puedeEditar = await puedeGestionarTipo(req.user.id, req.user.rol, 'editar', tipoActual);
+      if (!puedeEditar) {
+        return res.status(403).json({ message: 'No tienes permiso para editar este usuario' });
+      }
+      if (!isAdmin && rol && rol !== rolActual) {
+        return res.status(403).json({ message: 'No tienes permiso para cambiar el rol de este usuario' });
+      }
+      if (rol && rol !== rolActual) {
+        const tipoNuevo = tipoDeRol(rol);
+        const puedeCambiarRol = await puedeGestionarTipo(req.user.id, req.user.rol, 'editar', tipoNuevo);
+        if (!puedeCambiarRol) {
+          return res.status(403).json({ message: 'No tienes permiso para cambiar el rol de este usuario' });
+        }
+      }
+    }
 
     const nombreClean = cleanString(nombre, 255);
     const usernameClean = cleanString(username, 255);
@@ -290,7 +326,7 @@ router.put('/editar/:id', auth, async (req, res) => {
       }
     }
 
-    const finalRol = isAdmin ? rol : req.user.rol;
+    let finalRol = isAdmin ? rol : isSelf ? req.user.rol : rolActual;
     if (finalRol && !ROLES_PERMITIDOS.includes(finalRol)) {
       return res.status(400).json({ message: 'Rol no válido. Roles permitidos: admin, profesor, estudiante' });
     }
@@ -388,12 +424,21 @@ router.post('/upload-photo', auth, upload.single('foto'), async (req, res) => {
   }
 });
 
-router.delete('/eliminar/:id', auth, authorize('admin'), async (req, res) => {
+router.delete('/eliminar/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
     const targetId = Number(id);
     if (targetId === req.user.id) {
       return res.status(400).json({ message: 'No puedes eliminar tu propia cuenta' });
+    }
+    const targetRow = await pool.query('SELECT rol FROM usuarios WHERE id = $1', [targetId]);
+    if (targetRow.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+    const tipo = tipoDeRol(targetRow.rows[0].rol);
+    const puedeEliminar = await puedeGestionarTipo(req.user.id, req.user.rol, 'eliminar', tipo);
+    if (!puedeEliminar) {
+      return res.status(403).json({ message: 'No tienes permiso para eliminar este usuario' });
     }
     const result = await pool.query('DELETE FROM usuarios WHERE id = $1 RETURNING id', [targetId]);
     if (result.rows.length === 0) {
@@ -451,6 +496,12 @@ router.get('/buscar', auth, authorize('admin'), async (req, res) => {
 router.get('/', auth, async (req, res) => {
   try {
     if (req.user.rol === 'admin') {
+      const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
+      return res.json(result.rows);
+    }
+    const permisos = await obtenerPermisosUsuario(req.user.id, req.user.rol);
+    const gestionaUsuarios = permisos.some((p) => p.startsWith('usuarios:'));
+    if (gestionaUsuarios) {
       const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
       return res.json(result.rows);
     }

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
-const { authorize } = require('../middleware/auth');
+const { permite } = require('../middleware/permisos');
 const { alumnoScope } = require('../middleware/scope');
 const { internalError } = require('../utils/httpError');
 
@@ -89,7 +89,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.post('/agregar', authorize('admin', 'profesor'), async (req, res) => {
+router.post('/agregar', permite('pagos', 'crear'), async (req, res) => {
   try {
     const { alumno_id, tipo_pago_id, semana, mes, estado, monto, monto_original, beca_porcentaje, monto_parcial, notas_pendiente, metodo_pago } = req.body;
 
@@ -154,7 +154,7 @@ router.post('/agregar', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.post('/', authorize('admin', 'profesor'), async (req, res) => {
+router.post('/', permite('pagos', 'crear'), async (req, res) => {
   try {
     const { alumno_id, tipo_pago_id, semana, mes, estado, monto, monto_original, beca_porcentaje, monto_parcial, notas_pendiente, metodo_pago } = req.body;
 
@@ -219,7 +219,7 @@ router.post('/', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.put('/editar/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.put('/editar/:id', permite('pagos', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
     const { alumno_id, tipo_pago_id, semana, mes, estado, monto, monto_original, beca_porcentaje, monto_parcial, notas_pendiente } = req.body;
@@ -262,7 +262,7 @@ router.put('/editar/:id', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.put('/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.put('/:id', permite('pagos', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
     const { alumno_id, tipo_pago_id, semana, mes, estado, monto, monto_original, beca_porcentaje, monto_parcial, notas_pendiente } = req.body;
@@ -305,7 +305,7 @@ router.put('/:id', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.delete('/eliminar/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.delete('/eliminar/:id', permite('pagos', 'eliminar'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM pagos WHERE id = $1 RETURNING id', [id]);
@@ -318,7 +318,7 @@ router.delete('/eliminar/:id', authorize('admin', 'profesor'), async (req, res) 
   }
 });
 
-router.delete('/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.delete('/:id', permite('pagos', 'eliminar'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM pagos WHERE id = $1 RETURNING id', [id]);

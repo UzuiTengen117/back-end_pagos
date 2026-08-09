@@ -29,6 +29,12 @@ const USUARIO_BASE = {
   token_version: 0,
 };
 
+const PERMISOS_VACIO = { match: 'FROM permisos_usuario WHERE usuario_id = $1', result: () => ({ rows: [] }) };
+
+function targetRol(rol) {
+  return { match: 'SELECT rol FROM usuarios WHERE id = $1', result: () => ({ rows: [{ rol }] }) };
+}
+
 test('registro: sin token → 401', async () => {
   await start();
   const res = await request('POST', '/api/usuarios/registro', {
@@ -60,6 +66,7 @@ test('registro: admin con rol inválido → 400', async () => {
 test('registro: admin → 201 y crea el usuario', async () => {
   await start();
   install([
+    PERMISOS_VACIO,
     {
       match: 'INSERT INTO usuarios',
       result: () => ({ rows: [{ ...USUARIO_BASE, rol: 'profesor', token_version: 0 }] }),
@@ -120,7 +127,7 @@ test('buscar: sin token → 401 y no-admin → 403', async () => {
 
 test('editar otro usuario: no-admin → 403', async () => {
   await start();
-  install();
+  install([targetRol('profesor'), PERMISOS_VACIO]);
   const res = await request('PUT', '/api/usuarios/editar/2', {
     token: token('estudiante', 1),
     body: { nombre: 'x', primer_apellido: '', segundo_apellido: '', username: 'x', email: 'x@x.com', rol: 'admin' },
@@ -179,6 +186,8 @@ test('editar propio con password y currentPassword incorrecta → 400', async ()
 test('eliminar: no-admin → 403; admin a otro → 200; admin a sí mismo → 400', async () => {
   await start();
   install([
+    targetRol('profesor'),
+    PERMISOS_VACIO,
     {
       match: 'DELETE FROM usuarios WHERE id = $1',
       result: () => ({ rows: [{ id: 2 }] }),
@@ -279,6 +288,7 @@ test('login: 5 fallos consecutivos bloquean la cuenta (429)', async () => {
 test('GET /api/usuarios: no-admin solo ve su propio registro', async () => {
   await start();
   const { calls } = install([
+    PERMISOS_VACIO,
     {
       match: 'FROM usuarios WHERE id = $1',
       result: () => ({ rows: [{ ...USUARIO_BASE }] }),

@@ -1,0 +1,197 @@
+const pool = require('../config/database');
+
+// Las 8 categorías del sistema. Dentro de cada una están sus acciones.
+// El módulo `usuarios` usa subcategorías (estudiantes/profesores/administradores).
+// Las acciones con sufijo quedan codificadas en `accion` como `crear:estudiantes`.
+const MODULOS_ACCIONES = {
+  pagos: {
+    label: 'Pagos',
+    acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+  },
+  inscripciones: {
+    label: 'Inscripciones',
+    acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+  },
+  comprobantes: {
+    label: 'Comprobantes',
+    acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+  },
+  alumnos: {
+    label: 'Registro de Alumnos',
+    acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+  },
+  usuarios: {
+    label: 'Registro de Usuarios',
+    subcategorias: {
+      estudiantes: {
+        label: 'Estudiantes',
+        acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+      },
+      profesores: {
+        label: 'Profesores',
+        acciones: { ver: 'Ver', crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+      },
+      administradores: {
+        label: 'Administradores',
+        acciones: { ver: 'Ver', crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+      },
+    },
+    // Acciones que un usuario que no es administrador nunca puede tener.
+    bloqueadas: ['crear:administradores', 'editar:administradores', 'eliminar:administradores'],
+  },
+  solicitudes_reembolso: {
+    label: 'Reembolsos',
+    acciones: {
+      ver: 'Ver',
+      aprobar: 'Aprobar',
+      rechazar: 'Rechazar',
+      editar: 'Editar',
+      eliminar: 'Eliminar',
+    },
+  },
+  precios: {
+    label: 'Precios',
+    acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+  },
+  becas: {
+    label: 'Becas',
+    acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+  },
+};
+
+// Permisos por defecto según el rol. Se usan mientras el usuario no tenga
+// una configuración explícita en permisos_usuario.
+const DEFAULTS = {
+  profesor: [
+    'pagos:crear', 'pagos:editar', 'pagos:eliminar',
+    'inscripciones:crear', 'inscripciones:editar', 'inscripciones:eliminar',
+    'comprobantes:crear', 'comprobantes:editar', 'comprobantes:eliminar',
+    'alumnos:crear', 'alumnos:editar', 'alumnos:eliminar',
+    'usuarios:crear:estudiantes', 'usuarios:editar:estudiantes', 'usuarios:eliminar:estudiantes',
+    'usuarios:ver:profesores', 'usuarios:ver:administradores',
+    'solicitudes_reembolso:ver', 'solicitudes_reembolso:aprobar', 'solicitudes_reembolso:rechazar',
+    'precios:crear', 'precios:editar', 'precios:eliminar',
+    'becas:crear', 'becas:editar', 'becas:eliminar',
+  ],
+  estudiante: ['solicitudes_reembolso:ver'],
+  admin: null,
+};
+
+// Mapas rol <-> tipo de subcategoría del módulo usuarios.
+function tipoDeRol(rol) {
+  const map = { estudiante: 'estudiantes', profesor: 'profesores', admin: 'administradores' };
+  return map[rol] || null;
+}
+
+function todasLasAcciones() {
+  const out = [];
+  for (const [modulo, cfg] of Object.entries(MODULOS_ACCIONES)) {
+    if (cfg.subcategorias) {
+      for (const [sub, subCfg] of Object.entries(cfg.subcategorias)) {
+        for (const accion of Object.keys(subCfg.acciones)) {
+          out.push(`${modulo}:${accion}:${sub}`);
+        }
+      }
+    } else {
+      for (const accion of Object.keys(cfg.acciones)) {
+        out.push(`${modulo}:${accion}`);
+      }
+    }
+  }
+  return out;
+}
+
+function esValido(modulo, accion) {
+  const cfg = MODULOS_ACCIONES[modulo];
+  if (!cfg) return false;
+  if (cfg.subcategorias) {
+    const [accionBase, sub] = String(accion).split(':');
+    const subCfg = cfg.subcategorias[sub];
+    return Boolean(subCfg && subCfg.acciones[accionBase]);
+  }
+  return Boolean(cfg.acciones && cfg.acciones[accion]);
+}
+
+// Acciones de administración de administradores: nunca asignables a no-admin.
+function esBloqueada(modulo, accion) {
+  if (modulo !== 'usuarios') return false;
+  const [accionBase, sub] = String(accion).split(':');
+  return sub === 'administradores' && ['crear', 'editar', 'eliminar'].includes(accionBase);
+}
+
+// Devuelve los permisos efectivos del usuario: si tiene filas explícitas
+// se usan esas; si no, los por defecto de su rol (admin → todos).
+async function obtenerPermisosUsuario(usuarioId, rol) {
+  const result = await pool.query(
+    'SELECT modulo, accion FROM permisos_usuario WHERE usuario_id = $1',
+    [usuarioId]
+  );
+  const explicitos = result.rows.map((r) => `${r.modulo}:${r.accion}`);
+  if (explicitos.length > 0) {
+    return explicitos;
+  }
+  if (rol === 'admin') {
+    return todasLasAcciones();
+  }
+  return [...(DEFAULTS[rol] || [])];
+}
+
+async function tienePermiso(usuarioId, rol, modulo, accion) {
+  const permisos = await obtenerPermisosUsuario(usuarioId, rol);
+  return permisos.includes(`${modulo}:${accion}`);
+}
+
+// ¿Puede el actor gestionar usuarios de cierto tipo? Los tipos de administrador
+// solo los gestiona un administrador.
+async function puedeGestionarTipo(usuarioId, rolActor, accion, tipo) {
+  if (tipo === 'administradores') {
+    return rolActor === 'admin';
+  }
+  return tienePermiso(usuarioId, rolActor, 'usuarios', `${accion}:${tipo}`);
+}
+
+// Middleware de autorización basado en permisos por módulo/acción.
+const permite = (modulo, accion) => {
+  return async (req, res, next) => {
+    try {
+      const ok = await tienePermiso(req.user.id, req.user.rol, modulo, accion);
+      if (!ok) {
+        return res.status(403).json({ message: 'No tienes permiso para esta acción' });
+      }
+      next();
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  };
+};
+
+// Reemplaza el conjunto de permisos explícitos de un usuario. Si el destino
+// no es administrador, se descartan las acciones bloqueadas.
+async function reemplazarPermisos(usuarioId, permisos, rolDestino) {
+  await pool.query('DELETE FROM permisos_usuario WHERE usuario_id = $1', [usuarioId]);
+  const lista = Array.isArray(permisos) ? permisos : [];
+  const esAdminDestino = rolDestino === 'admin';
+  for (const p of lista) {
+    if (!p || !esValido(p.modulo, p.accion)) continue;
+    if (!esAdminDestino && esBloqueada(p.modulo, p.accion)) continue;
+    await pool.query(
+      'INSERT INTO permisos_usuario (usuario_id, modulo, accion) VALUES ($1, $2, $3)',
+      [usuarioId, p.modulo, p.accion]
+    );
+  }
+}
+
+module.exports = {
+  MODULOS_ACCIONES,
+  DEFAULTS,
+  tipoDeRol,
+  esValido,
+  esBloqueada,
+  todasLasAcciones,
+  obtenerPermisosUsuario,
+  tienePermiso,
+  puedeGestionarTipo,
+  permite,
+  reemplazarPermisos,
+};

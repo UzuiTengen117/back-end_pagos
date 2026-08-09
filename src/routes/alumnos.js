@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { authorize } = require('../middleware/auth');
+const { permite } = require('../middleware/permisos');
 const { alumnoScope } = require('../middleware/scope');
 const { internalError } = require('../utils/httpError');
 
@@ -106,7 +107,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.post('/agregar', authorize('admin', 'profesor'), async (req, res) => {
+router.post('/agregar', permite('alumnos', 'crear'), async (req, res) => {
   try {
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
 
@@ -139,7 +140,7 @@ router.post('/agregar', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.post('/', authorize('admin', 'profesor'), async (req, res) => {
+router.post('/', permite('alumnos', 'crear'), async (req, res) => {
   try {
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
 
@@ -172,7 +173,7 @@ router.post('/', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.put('/editar/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.put('/editar/:id', permite('alumnos', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
@@ -200,7 +201,7 @@ router.put('/editar/:id', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.put('/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.put('/:id', permite('alumnos', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
@@ -228,7 +229,7 @@ router.put('/:id', authorize('admin', 'profesor'), async (req, res) => {
   }
 });
 
-router.delete('/eliminar/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.delete('/eliminar/:id', permite('alumnos', 'eliminar'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM alumnos WHERE id = $1 RETURNING id', [id]);
@@ -241,7 +242,7 @@ router.delete('/eliminar/:id', authorize('admin', 'profesor'), async (req, res) 
   }
 });
 
-router.delete('/:id', authorize('admin', 'profesor'), async (req, res) => {
+router.delete('/:id', permite('alumnos', 'eliminar'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM alumnos WHERE id = $1 RETURNING id', [id]);
