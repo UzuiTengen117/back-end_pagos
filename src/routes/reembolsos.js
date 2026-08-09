@@ -9,7 +9,7 @@ const DIAS_LIMITE = 7;
 
 const SELECT_REEMBOLSOS = `
   SELECT s.id, s.alumno_id, s.pago_id, s.comprobante_id, s.monto, s.motivo,
-         s.estado, s.motivo_rechazo, s.revisado_por, s.creada_por, s.created_at, s.updated_at,
+         s.estado, s.motivo_rechazo, s.motivo_aprobacion, s.revisado_por, s.creada_por, s.created_at, s.updated_at,
          a.nombre, a.primer_apellido, a.segundo_apellido,
          c.concepto AS comprobante_concepto, c.metodo_pago AS comprobante_metodo_pago,
          c.created_at AS comprobante_fecha, c.folio,
@@ -172,11 +172,15 @@ router.put('/editar/:id', permite('solicitudes_reembolso', 'editar'), async (req
 router.put('/:id/aprobar', permite('solicitudes_reembolso', 'aprobar'), async (req, res) => {
   try {
     const { id } = req.params;
+    const motivo = String(req.body.motivo || '').trim();
+    if (!motivo) {
+      return res.status(400).json({ message: 'El motivo de la aprobación es requerido' });
+    }
     const result = await pool.query(
       `UPDATE solicitudes_reembolso
-       SET estado = 'aprobada', motivo_rechazo = NULL, revisado_por = $1, updated_at = NOW()
-       WHERE id = $2 AND estado = 'pendiente' RETURNING *`,
-      [req.user.id, id]
+       SET estado = 'aprobada', motivo_aprobacion = $1, motivo_rechazo = NULL, revisado_por = $2, updated_at = NOW()
+       WHERE id = $3 AND estado = 'pendiente' RETURNING *`,
+      [motivo, req.user.id, id]
     );
     if (result.rows.length === 0) {
       const check = await pool.query('SELECT estado FROM solicitudes_reembolso WHERE id = $1', [id]);
@@ -201,7 +205,7 @@ router.put('/:id/rechazar', permite('solicitudes_reembolso', 'rechazar'), async 
 
     const result = await pool.query(
       `UPDATE solicitudes_reembolso
-       SET estado = 'rechazada', motivo_rechazo = $1, revisado_por = $2, updated_at = NOW()
+       SET estado = 'rechazada', motivo_rechazo = $1, motivo_aprobacion = NULL, revisado_por = $2, updated_at = NOW()
        WHERE id = $3 AND estado = 'pendiente' RETURNING *`,
       [motivoRechazo, req.user.id, id]
     );
@@ -223,7 +227,7 @@ router.put('/:id/reabrir', permite('solicitudes_reembolso', 'editar'), async (re
     const { id } = req.params;
     const result = await pool.query(
       `UPDATE solicitudes_reembolso
-       SET estado = 'pendiente', motivo_rechazo = NULL, revisado_por = NULL, updated_at = NOW()
+       SET estado = 'pendiente', motivo_rechazo = NULL, motivo_aprobacion = NULL, revisado_por = NULL, updated_at = NOW()
        WHERE id = $1 AND estado IN ('aprobada', 'rechazada') RETURNING *`,
       [id]
     );

@@ -213,23 +213,38 @@ test('PUT /api/reembolsos/editar/:id: profesor sin permiso → 403; admin → 20
   assert.equal(update.params[1], 500);
 });
 
-test('PUT /api/reembolsos/:id/aprobar: profesor con permiso por defecto aprueba pendiente → 200', async () => {
+test('PUT /api/reembolsos/:id/aprobar: profesor con permiso por defecto aprueba pendiente con motivo → 200', async () => {
   await start();
   const { calls } = install([
     PERMISOS_VACIO,
     { match: 'SET estado = \'aprobada\'', result: () => ({ rows: [{ id: 1, estado: 'aprobada' }] }) },
   ]);
-  const res = await request('PUT', '/api/reembolsos/1/aprobar', { token: token('profesor') });
+  const res = await request('PUT', '/api/reembolsos/1/aprobar', {
+    token: token('profesor'),
+    body: { motivo: 'Reembolso válido' },
+  });
   assert.equal(res.status, 200);
   const update = calls.find((c) => c.text.includes('SET estado'));
   assert.match(update.text, /AND estado = 'pendiente'/);
-  assert.equal(update.params[1], '1');
+  assert.equal(update.params[0], 'Reembolso válido', 'motivo de aprobación');
+  assert.match(update.text, /motivo_aprobacion = \$1/);
+  assert.equal(update.params[2], '1');
+});
+
+test('PUT /api/reembolsos/:id/aprobar: sin motivo → 400', async () => {
+  await start();
+  install([PERMISOS_VACIO]);
+  const res = await request('PUT', '/api/reembolsos/1/aprobar', { token: token('profesor'), body: {} });
+  assert.equal(res.status, 400);
 });
 
 test('PUT /api/reembolsos/:id/aprobar: estudiante no puede aprobar → 403', async () => {
   await start();
   install([PERMISOS_VACIO]);
-  const res = await request('PUT', '/api/reembolsos/1/aprobar', { token: token('estudiante', 7) });
+  const res = await request('PUT', '/api/reembolsos/1/aprobar', {
+    token: token('estudiante', 7),
+    body: { motivo: 'Reembolso válido' },
+  });
   assert.equal(res.status, 403);
 });
 
@@ -240,7 +255,10 @@ test('PUT /api/reembolsos/:id/aprobar: solicitud ya revisada → 400', async () 
     { match: 'SET estado = \'aprobada\'', result: () => ({ rows: [] }) },
     { match: 'SELECT estado FROM solicitudes_reembolso WHERE id = $1', result: () => ({ rows: [{ estado: 'aprobada' }] }) },
   ]);
-  const res = await request('PUT', '/api/reembolsos/1/aprobar', { token: token('profesor') });
+  const res = await request('PUT', '/api/reembolsos/1/aprobar', {
+    token: token('profesor'),
+    body: { motivo: 'Reembolso válido' },
+  });
   assert.equal(res.status, 400);
   assert.match(res.data.message, /pendientes/);
 });

@@ -103,11 +103,14 @@ CREATE TABLE IF NOT EXISTS solicitudes_reembolso (
   motivo TEXT NOT NULL,
   estado VARCHAR(50) NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'aprobada', 'rechazada')),
   motivo_rechazo TEXT,
+  motivo_aprobacion TEXT,
   revisado_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
   creada_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE solicitudes_reembolso ADD COLUMN IF NOT EXISTS motivo_aprobacion TEXT;
 
 CREATE TABLE IF NOT EXISTS permisos_usuario (
   id SERIAL PRIMARY KEY,
