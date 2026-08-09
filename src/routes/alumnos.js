@@ -109,10 +109,14 @@ router.get('/:id', async (req, res) => {
 
 router.post('/agregar', permite('alumnos', 'crear'), async (req, res) => {
   try {
-    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede } = req.body;
 
     if (!nombre || !primer_apellido || !usuario_id || !email || !grado) {
       return res.status(400).json({ message: 'Nombre, primer apellido, usuario_id, email y grado son requeridos' });
+    }
+
+    if (!['Progreso', 'Morelos'].includes(sede)) {
+      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
     }
 
     const userCheck = await pool.query('SELECT id FROM usuarios WHERE id = $1', [usuario_id]);
@@ -128,8 +132,8 @@ router.post('/agregar', permite('alumnos', 'crear'), async (req, res) => {
     }
 
     const result = await pool.query(
-      'INSERT INTO alumnos (nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-      [nombre, primer_apellido, segundo_apellido || null, usuario_id, email, telefono || null, grado, beca_id || null]
+      'INSERT INTO alumnos (nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+      [nombre, primer_apellido, segundo_apellido || null, usuario_id, email, telefono || null, grado, beca_id || null, sede]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -142,10 +146,14 @@ router.post('/agregar', permite('alumnos', 'crear'), async (req, res) => {
 
 router.post('/', permite('alumnos', 'crear'), async (req, res) => {
   try {
-    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede } = req.body;
 
     if (!nombre || !primer_apellido || !usuario_id || !email || !grado) {
       return res.status(400).json({ message: 'Nombre, primer apellido, usuario_id, email y grado son requeridos' });
+    }
+
+    if (!['Progreso', 'Morelos'].includes(sede)) {
+      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
     }
 
     const userCheck = await pool.query('SELECT id FROM usuarios WHERE id = $1', [usuario_id]);
@@ -161,8 +169,8 @@ router.post('/', permite('alumnos', 'crear'), async (req, res) => {
     }
 
     const result = await pool.query(
-      'INSERT INTO alumnos (nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-      [nombre, primer_apellido, segundo_apellido || null, usuario_id, email, telefono || null, grado, beca_id || null]
+      'INSERT INTO alumnos (nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+      [nombre, primer_apellido, segundo_apellido || null, usuario_id, email, telefono || null, grado, beca_id || null, sede]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -176,7 +184,11 @@ router.post('/', permite('alumnos', 'crear'), async (req, res) => {
 router.put('/editar/:id', permite('alumnos', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede } = req.body;
+
+    if (!['Progreso', 'Morelos'].includes(sede)) {
+      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
+    }
 
     if (beca_id) {
       const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1 AND estado = $2', [beca_id, 'activa']);
@@ -186,8 +198,8 @@ router.put('/editar/:id', permite('alumnos', 'editar'), async (req, res) => {
     }
 
     const result = await pool.query(
-      'UPDATE alumnos SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, usuario_id = $4, email = $5, telefono = $6, grado = $7, beca_id = $8 WHERE id = $9 RETURNING *',
-      [nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id || null, id]
+      'UPDATE alumnos SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, usuario_id = $4, email = $5, telefono = $6, grado = $7, beca_id = $8, sede = $9 WHERE id = $10 RETURNING *',
+      [nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id || null, sede, id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Alumno no encontrado' });
@@ -204,7 +216,11 @@ router.put('/editar/:id', permite('alumnos', 'editar'), async (req, res) => {
 router.put('/:id', permite('alumnos', 'editar'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id } = req.body;
+    const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede } = req.body;
+
+    if (!['Progreso', 'Morelos'].includes(sede)) {
+      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
+    }
 
     if (beca_id) {
       const becaCheck = await pool.query('SELECT id FROM becas WHERE id = $1 AND estado = $2', [beca_id, 'activa']);
@@ -214,8 +230,8 @@ router.put('/:id', permite('alumnos', 'editar'), async (req, res) => {
     }
 
     const result = await pool.query(
-      'UPDATE alumnos SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, usuario_id = $4, email = $5, telefono = $6, grado = $7, beca_id = $8 WHERE id = $9 RETURNING *',
-      [nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id || null, id]
+      'UPDATE alumnos SET nombre = $1, primer_apellido = $2, segundo_apellido = $3, usuario_id = $4, email = $5, telefono = $6, grado = $7, beca_id = $8, sede = $9 WHERE id = $10 RETURNING *',
+      [nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id || null, sede, id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Alumno no encontrado' });

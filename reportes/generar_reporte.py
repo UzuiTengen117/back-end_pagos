@@ -45,7 +45,7 @@ DATE_FMT = 'DD/MM/YYYY'
 QUERIES = {
     "alumnos": """
         SELECT a.id, a.nombre, a.primer_apellido, a.segundo_apellido, a.email,
-               a.telefono, a.grado, a.beca_id, COALESCE(b.porcentaje, 0) AS beca_porcentaje,
+               a.telefono, a.grado, a.sede, a.beca_id, COALESCE(b.porcentaje, 0) AS beca_porcentaje,
                a.created_at
         FROM alumnos a
         LEFT JOIN becas b ON a.beca_id = b.id
@@ -298,18 +298,18 @@ def build_workbook(data, ruta_salida):
     crear_hoja_datos(
         wb,
         "Alumnos",
-        ["ID", "Nombre", "Primer Apellido", "Segundo Apellido", "Email", "Telefono", "Grado", "Beca (%)", "Fecha"],
+        ["ID", "Nombre", "Primer Apellido", "Segundo Apellido", "Email", "Telefono", "Grado", "Sede", "Beca (%)", "Fecha"],
         [
             [
                 a["id"], a["nombre"], a["primer_apellido"] or "", a["segundo_apellido"] or "",
-                a["email"], a["telefono"] or "", a["grado"],
+                a["email"], a["telefono"] or "", a["grado"], a["sede"] or "",
                 a["beca_porcentaje"] or 0, formatear_fecha(a["created_at"]),
             ]
             for a in data["alumnos"]
         ],
-        [6, 18, 18, 18, 28, 14, 12, 12, 14],
-        enteros={0, 7},
-        fechas={8},
+        [6, 18, 18, 18, 28, 14, 12, 12, 12, 14],
+        enteros={0, 8},
+        fechas={9},
     )
 
     crear_hoja_datos(

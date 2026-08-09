@@ -70,6 +70,8 @@ ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP;
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS pregunta_secreta TEXT;
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS respuesta_secreta TEXT;
 
+ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS sede VARCHAR(50) CHECK (sede IN ('Progreso', 'Morelos'));
+
 CREATE TABLE IF NOT EXISTS inscripciones (
   id SERIAL PRIMARY KEY,
   alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,

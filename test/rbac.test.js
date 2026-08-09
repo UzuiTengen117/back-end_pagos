@@ -98,7 +98,7 @@ test('escritura de datos: estudiante → 403; profesor con permisos por defecto 
 
   const alumnoProf = await request('POST', '/api/alumnos', {
     token: token('profesor'),
-    body: { nombre: 'A', primer_apellido: 'B', usuario_id: 5, email: 'a@b.com', grado: '1' },
+    body: { nombre: 'A', primer_apellido: 'B', usuario_id: 5, email: 'a@b.com', grado: '1', sede: 'Progreso' },
   });
   assert.equal(alumnoProf.status, 201);
 
