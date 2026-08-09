@@ -502,7 +502,12 @@ router.get('/', auth, async (req, res) => {
     const permisos = await obtenerPermisosUsuario(req.user.id, req.user.rol);
     const gestionaUsuarios = permisos.some((p) => p.startsWith('usuarios:'));
     if (gestionaUsuarios) {
-      const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
+      const puedeVerAdmins = permisos.includes('usuarios:ver:administradores');
+      if (puedeVerAdmins) {
+        const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios`);
+        return res.json(result.rows);
+      }
+      const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios WHERE rol <> 'admin'`);
       return res.json(result.rows);
     }
     const result = await pool.query(`SELECT ${USUARIO_FIELDS} FROM usuarios WHERE id = $1`, [req.user.id]);

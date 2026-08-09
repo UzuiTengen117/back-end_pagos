@@ -37,7 +37,13 @@ const MODULOS_ACCIONES = {
       },
     },
     // Acciones que un usuario que no es administrador nunca puede tener.
-    bloqueadas: ['crear:administradores', 'editar:administradores', 'eliminar:administradores'],
+    // La gestión de administradores (incluido verlos) es exclusiva de admins.
+    bloqueadas: [
+      'ver:administradores',
+      'crear:administradores',
+      'editar:administradores',
+      'eliminar:administradores',
+    ],
   },
   solicitudes_reembolso: {
     label: 'Reembolsos',
@@ -68,7 +74,7 @@ const DEFAULTS = {
     'comprobantes:crear', 'comprobantes:editar', 'comprobantes:eliminar',
     'alumnos:crear', 'alumnos:editar', 'alumnos:eliminar',
     'usuarios:crear:estudiantes', 'usuarios:editar:estudiantes', 'usuarios:eliminar:estudiantes',
-    'usuarios:ver:profesores', 'usuarios:ver:administradores',
+    'usuarios:ver:profesores',
     'solicitudes_reembolso:ver', 'solicitudes_reembolso:aprobar', 'solicitudes_reembolso:rechazar',
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
@@ -116,7 +122,7 @@ function esValido(modulo, accion) {
 function esBloqueada(modulo, accion) {
   if (modulo !== 'usuarios') return false;
   const [accionBase, sub] = String(accion).split(':');
-  return sub === 'administradores' && ['crear', 'editar', 'eliminar'].includes(accionBase);
+  return sub === 'administradores' && ['ver', 'crear', 'editar', 'eliminar'].includes(accionBase);
 }
 
 // Devuelve los permisos efectivos del usuario: si tiene filas explícitas
@@ -167,9 +173,13 @@ const permite = (modulo, accion) => {
 };
 
 // Reemplaza el conjunto de permisos explícitos de un usuario. Si el destino
-// no es administrador, se descartan las acciones bloqueadas.
+// no es administrador, se descartan las acciones bloqueadas. Los estudiantes
+// nunca reciben permisos asignados: se dejan siempre con los por defecto.
 async function reemplazarPermisos(usuarioId, permisos, rolDestino) {
   await pool.query('DELETE FROM permisos_usuario WHERE usuario_id = $1', [usuarioId]);
+  if (rolDestino === 'estudiante') {
+    return;
+  }
   const lista = Array.isArray(permisos) ? permisos : [];
   const esAdminDestino = rolDestino === 'admin';
   for (const p of lista) {
