@@ -121,6 +121,36 @@ test('escritura de datos: estudiante → 403; profesor con permisos por defecto 
   assert.equal(becaEst.status, 403, 'un estudiante nunca crea becas');
 });
 
+test('GET /api/usuarios: profesor por defecto ve el listado completo incluidos los admins', async () => {
+  await start();
+  const PERMISOS_VACIO = { match: 'FROM permisos_usuario WHERE usuario_id = $1', result: () => ({ rows: [] }) };
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'SELECT id, nombre', result: () => ({ rows: [] }) },
+  ]);
+  const res = await request('GET', '/api/usuarios', { token: token('profesor', 7) });
+  assert.equal(res.status, 200);
+  const call = calls.find((c) => c.text.includes('SELECT id, nombre'));
+  assert.ok(call, 'debe ejecutarse la consulta de listado');
+  assert.ok(!call.text.includes('WHERE rol'), 'el profesor por defecto ve también a los admins');
+});
+
+test('GET /api/usuarios: profesor sin ver:administradores no ve admins', async () => {
+  await start();
+  const { calls } = install([
+    {
+      match: 'FROM permisos_usuario WHERE usuario_id = $1',
+      result: () => ({ rows: [{ modulo: 'usuarios', accion: 'crear:estudiantes' }] }),
+    },
+    { match: 'FROM usuarios WHERE rol', result: () => ({ rows: [] }) },
+  ]);
+  const res = await request('GET', '/api/usuarios', { token: token('profesor', 7) });
+  assert.equal(res.status, 200);
+  const call = calls.find((c) => c.text.includes('FROM usuarios WHERE rol'));
+  assert.ok(call, 'debe filtrar a los admins');
+  assert.match(call.text, /rol <> 'admin'/);
+});
+
 test('GET /api/usuarios: admin ve el listado completo', async () => {
   await start();
   const { calls } = install([

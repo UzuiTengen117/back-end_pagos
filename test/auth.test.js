@@ -53,6 +53,53 @@ test('registro: estudiante autenticado → 403', async () => {
   assert.equal(res.status, 403);
 });
 
+test('registro: profesor no puede crear administradores → 403', async () => {
+  await start();
+  install();
+  const res = await request('POST', '/api/usuarios/registro', {
+    token: token('profesor'),
+    body: { nombre: 'x', username: 'x', email: 'x@x.com', password: '123456', rol: 'admin' },
+  });
+  assert.equal(res.status, 403);
+  assert.ok(res.data.message, 'debe responder con un mensaje');
+});
+
+test('registro: profesor sí puede crear estudiantes → 201', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    {
+      match: 'INSERT INTO usuarios',
+      result: () => ({ rows: [{ ...USUARIO_BASE, rol: 'estudiante', token_version: 0 }] }),
+    },
+  ]);
+  const res = await request('POST', '/api/usuarios/registro', {
+    token: token('profesor'),
+    body: { nombre: 'x', username: 'x', email: 'x@x.com', password: '123456', rol: 'estudiante' },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.data.usuario.rol, 'estudiante');
+});
+
+test('editar un administrador: profesor → 403', async () => {
+  await start();
+  install([targetRol('admin')]);
+  const res = await request('PUT', '/api/usuarios/editar/2', {
+    token: token('profesor', 1),
+    body: { nombre: 'x', primer_apellido: '', segundo_apellido: '', username: 'x', email: 'x@x.com' },
+  });
+  assert.equal(res.status, 403);
+});
+
+test('eliminar un administrador: profesor → 403', async () => {
+  await start();
+  install([targetRol('admin')]);
+  const res = await request('DELETE', '/api/usuarios/eliminar/2', {
+    token: token('profesor', 1),
+  });
+  assert.equal(res.status, 403);
+});
+
 test('registro: admin con rol inválido → 400', async () => {
   await start();
   install();

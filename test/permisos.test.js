@@ -63,7 +63,7 @@ test('GET /api/permisos/modulos: subcategorías del registro de usuarios', async
   assert.ok(usuarios.subcategorias.administradores.acciones.crear);
 
   const bloqueadas = usuarios.bloqueadas || [];
-  assert.ok(bloqueadas.includes('ver:administradores'));
+  assert.ok(!bloqueadas.includes('ver:administradores'), 'ver administradores sí puede asignarse a no-admins');
   assert.ok(bloqueadas.includes('crear:administradores'));
   assert.ok(bloqueadas.includes('editar:administradores'));
   assert.ok(bloqueadas.includes('eliminar:administradores'));
@@ -87,7 +87,7 @@ test('GET /api/permisos/defaults/:rol devuelve los permisos base', async () => {
   assert.ok(!prof.data.permisos.includes('solicitudes_reembolso:eliminar'));
   assert.ok(prof.data.permisos.includes('usuarios:crear:estudiantes'));
   assert.ok(prof.data.permisos.includes('usuarios:ver:profesores'));
-  assert.ok(!prof.data.permisos.includes('usuarios:ver:administradores'), 'ver administradores no es de profesor');
+  assert.ok(prof.data.permisos.includes('usuarios:ver:administradores'), 'el profesor puede ver administradores');
   assert.ok(!prof.data.permisos.includes('usuarios:crear:profesores'));
   assert.ok(!prof.data.permisos.includes('usuarios:crear:administradores'));
 
@@ -128,6 +128,8 @@ test('GET /api/permisos/mis: profesor sin filas usa permisos por defecto', async
   assert.ok(res.data.permisos.includes('solicitudes_reembolso:rechazar'));
   assert.ok(!res.data.permisos.includes('solicitudes_reembolso:editar'));
   assert.ok(!res.data.permisos.includes('solicitudes_reembolso:eliminar'));
+  assert.ok(res.data.permisos.includes('usuarios:ver:administradores'), 'el profesor ve administradores');
+  assert.ok(!res.data.permisos.includes('usuarios:crear:administradores'));
 });
 
 test('GET /api/permisos/mis: permisos explícitos reemplazan los por defecto', async () => {
@@ -208,7 +210,7 @@ test('PUT /api/permisos/usuario/:id: acciones inválidas se ignoran', async () =
   assert.equal(inserts.length, 1, 'solo se debe insertar la acción válida');
 });
 
-test('PUT /api/permisos/usuario/:id: acciones de administradores no se asignan a un no-admin', async () => {
+test('PUT /api/permisos/usuario/:id: crear/editar/eliminar administradores no se asignan a un no-admin', async () => {
   await start();
   const { calls } = install([
     targetRol('profesor'),
@@ -228,7 +230,8 @@ test('PUT /api/permisos/usuario/:id: acciones de administradores no se asignan a
   });
   assert.equal(res.status, 200);
   const inserts = calls.filter((c) => c.text.includes('INSERT INTO permisos_usuario'));
-  assert.equal(inserts.length, 0, 'ninguna acción de administradores debe guardarse a un no-admin');
+  assert.equal(inserts.length, 1, 'solo ver:administradores debe guardarse a un no-admin');
+  assert.equal(inserts[0].params[2], 'ver:administradores');
 });
 
 test('PUT /api/permisos/usuario/:id: a un estudiante no se le asignan permisos', async () => {
