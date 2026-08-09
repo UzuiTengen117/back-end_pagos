@@ -218,6 +218,28 @@ router.put('/:id/rechazar', permite('solicitudes_reembolso', 'rechazar'), async 
   }
 });
 
+router.put('/:id/reabrir', permite('solicitudes_reembolso', 'editar'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `UPDATE solicitudes_reembolso
+       SET estado = 'pendiente', motivo_rechazo = NULL, revisado_por = NULL, updated_at = NOW()
+       WHERE id = $1 AND estado IN ('aprobada', 'rechazada') RETURNING *`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      const check = await pool.query('SELECT estado FROM solicitudes_reembolso WHERE id = $1', [id]);
+      if (check.rows.length === 0) {
+        return res.status(404).json({ message: 'Solicitud no encontrada' });
+      }
+      return res.status(400).json({ message: 'Solo se pueden reabrir solicitudes aprobadas o rechazadas' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
 router.delete('/eliminar/:id', permite('solicitudes_reembolso', 'eliminar'), async (req, res) => {
   try {
     const { id } = req.params;

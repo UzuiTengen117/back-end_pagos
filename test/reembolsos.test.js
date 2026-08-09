@@ -267,6 +267,38 @@ test('PUT /api/reembolsos/:id/rechazar: sin motivo → 400', async () => {
   assert.equal(res.status, 400);
 });
 
+test('PUT /api/reembolsos/:id/reabrir: admin reabre una solicitud revisada → 200', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: "SET estado = 'pendiente'", result: () => ({ rows: [{ id: 1, estado: 'pendiente' }] }) },
+  ]);
+  const res = await request('PUT', '/api/reembolsos/1/reabrir', { token: token('admin') });
+  assert.equal(res.status, 200);
+  const update = calls.find((c) => c.text.includes('SET estado'));
+  assert.match(update.text, /estado IN \('aprobada', 'rechazada'\)/);
+  assert.equal(update.params[0], '1');
+});
+
+test('PUT /api/reembolsos/:id/reabrir: profesor sin permiso de editar → 403', async () => {
+  await start();
+  install([PERMISOS_VACIO]);
+  const res = await request('PUT', '/api/reembolsos/1/reabrir', { token: token('profesor') });
+  assert.equal(res.status, 403);
+});
+
+test('PUT /api/reembolsos/:id/reabrir: solicitud ya pendiente → 400', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: "SET estado = 'pendiente'", result: () => ({ rows: [] }) },
+    { match: 'SELECT estado FROM solicitudes_reembolso WHERE id = $1', result: () => ({ rows: [{ estado: 'pendiente' }] }) },
+  ]);
+  const res = await request('PUT', '/api/reembolsos/1/reabrir', { token: token('admin') });
+  assert.equal(res.status, 400);
+  assert.match(res.data.message, /aprobadas o rechazadas/);
+});
+
 test('DELETE /api/reembolsos/eliminar/:id: profesor sin permiso → 403; admin → 200', async () => {
   await start();
   install([PERMISOS_VACIO]);
