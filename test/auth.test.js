@@ -298,38 +298,22 @@ test('login exitoso → 200 con token', async () => {
   assert.equal(res.data.usuario.rol, 'estudiante');
 });
 
-test('login: 5 fallos consecutivos bloquean la cuenta (429)', async () => {
+test('login: credenciales inválidas siempre retorna 401', async () => {
   await start();
   const hash = await bcrypt.hash('correcta', 4);
-  const state = { failures: 0 };
-  const MAX = 5;
 
   install([
     {
       match: 'FROM usuarios WHERE username = $1',
-      result: () => {
-        if (state.failures >= MAX) {
-          return { rows: [{ id: 1, username: 'test', password: hash, rol: 'estudiante', last_login_at: null, token_version: 0, failed_attempts: MAX, locked_until: new Date(Date.now() + 3600e3) }] };
-        }
-        return { rows: [{ id: 1, username: 'test', password: hash, rol: 'estudiante', last_login_at: null, token_version: 0, failed_attempts: state.failures, locked_until: null }] };
-      },
-    },
-    {
-      match: 'SET failed_attempts = failed_attempts + 1',
-      result: () => {
-        state.failures += 1;
-        return { rows: [] };
-      },
+      result: () => ({ rows: [{ id: 1, username: 'test', password: hash, rol: 'estudiante', last_login_at: null, token_version: 0 }] }),
     },
   ]);
 
   let status = 0;
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < 10; i += 1) {
     status = (await request('POST', '/api/usuarios/login', { body: { username: 'test', password: 'mala' } })).status;
   }
   assert.equal(status, 401);
-  const sexto = await request('POST', '/api/usuarios/login', { body: { username: 'test', password: 'mala' } });
-  assert.equal(sexto.status, 429);
 });
 
 test('GET /api/usuarios: no-admin solo ve su propio registro', async () => {

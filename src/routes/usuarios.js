@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const pool = require('../config/database');
 const { auth, authorize, JWT_SECRET } = require('../middleware/auth');
-const { loginLimiter, sensitiveLimiter } = require('../middleware/rateLimiter');
+const { sensitiveLimiter } = require('../middleware/rateLimiter');
 const {
   tipoDeRol,
   puedeGestionarTipo,
@@ -20,9 +20,6 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 const ROLES_PERMITIDOS = ['admin', 'profesor', 'estudiante'];
 
 const USUARIO_FIELDS = 'id, nombre, primer_apellido, segundo_apellido, username, email, rol, foto, pregunta_secreta, created_at';
-
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCK_MINUTES = 15;
 
 function expiresInToMs(value) {
   const match = String(value).match(/^(\d+)(s|m|h|d)$/);
@@ -98,7 +95,7 @@ router.post('/registro', auth, sensitiveLimiter, async (req, res) => {
   }
 });
 
-router.post('/login', loginLimiter, async (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const username = cleanString(req.body.username, 255);
     const password = String(req.body.password || '');
@@ -110,29 +107,11 @@ router.post('/login', loginLimiter, async (req, res) => {
     const result = await pool.query('SELECT * FROM usuarios WHERE username = $1', [username]);
     const user = result.rows[0];
 
-    if (user && user.locked_until) {
-      const lockedUntil = new Date(user.locked_until).getTime();
-      if (lockedUntil > Date.now()) {
-        return res.status(429).json({ message: 'Demasiados intentos fallidos. Intenta de nuevo más tarde.' });
-      }
-      await pool.query('UPDATE usuarios SET failed_attempts = 0, locked_until = NULL WHERE id = $1', [user.id]);
-    }
-
     const validPassword = user ? await bcrypt.compare(password, user.password) : false;
 
     if (!user || !validPassword) {
-      if (user) {
-        await pool.query(
-          `UPDATE usuarios SET failed_attempts = failed_attempts + 1,
-             locked_until = CASE WHEN failed_attempts + 1 >= $2 THEN NOW() + ($3 || ' minutes')::interval ELSE locked_until END
-           WHERE id = $1`,
-          [user.id, MAX_FAILED_ATTEMPTS, LOCK_MINUTES]
-        );
-      }
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
-
-    await pool.query('UPDATE usuarios SET failed_attempts = 0, locked_until = NULL WHERE id = $1', [user.id]);
 
     if (user.last_login_at) {
       const lastLogin = new Date(user.last_login_at).getTime();

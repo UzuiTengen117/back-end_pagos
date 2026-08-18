@@ -1,6 +1,6 @@
 const rateLimit = require('express-rate-limit');
 
-const defaultMax = () => parseInt(process.env.RATE_LIMIT_MAX, 10) || 10;
+const defaultMax = () => parseInt(process.env.RATE_LIMIT_MAX, 10) || 20;
 
 const createLimiter = (max, windowMinutes) =>
   rateLimit({
