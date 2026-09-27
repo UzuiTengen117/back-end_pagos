@@ -65,7 +65,16 @@ const MODULOS_ACCIONES = {
   },
   asistencias: {
     label: 'Asistencias',
-    acciones: { ver: 'Ver', registrar: 'Registrar', reportar: 'Reportar' },
+    subcategorias: {
+      tomar_asistencia: {
+        label: 'Tomar Asistencia',
+        acciones: { registrar: 'Registrar' },
+      },
+      reporte_asistencias: {
+        label: 'Reporte de Asistencias',
+        acciones: { reportar: 'Reportar' },
+      },
+    },
   },
 };
 
@@ -82,7 +91,7 @@ const DEFAULTS = {
     'solicitudes_reembolso:ver', 'solicitudes_reembolso:aprobar', 'solicitudes_reembolso:rechazar',
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
-    'asistencias:ver', 'asistencias:registrar', 'asistencias:reportar',
+    'asistencias:registrar:tomar_asistencia', 'asistencias:reportar:reporte_asistencias',
   ],
   estudiante: ['solicitudes_reembolso:ver'],
   admin: null,

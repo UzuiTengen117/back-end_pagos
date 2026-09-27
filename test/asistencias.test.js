@@ -318,7 +318,9 @@ const CON_PERMISOS = (permisos) => ({
   match: 'FROM permisos_usuario WHERE usuario_id = $1',
   result: () => ({
     rows: permisos.map((p) => {
-      const [modulo, accion] = p.split(':');
+      const idx = p.indexOf(':');
+      const modulo = p.slice(0, idx);
+      const accion = p.slice(idx + 1);
       return { modulo, accion };
     }),
   }),
@@ -326,7 +328,7 @@ const CON_PERMISOS = (permisos) => ({
 
 test('GET /api/asistencias/sesiones: profesor sin el permiso reportar → 403', async () => {
   await start();
-  install([CON_PERMISOS(['asistencias:ver', 'asistencias:registrar'])]);
+  install([CON_PERMISOS(['asistencias:ver', 'asistencias:registrar:tomar_asistencia'])]);
   const res = await request('GET', '/api/asistencias/sesiones', { token: token('profesor', 3) });
   assert.equal(res.status, 403);
 });
@@ -334,7 +336,7 @@ test('GET /api/asistencias/sesiones: profesor sin el permiso reportar → 403', 
 test('GET /api/asistencias/sesiones: profesor con reportar ve todas las sedes', async () => {
   await start();
   const { calls } = install([
-    CON_PERMISOS(['asistencias:ver', 'asistencias:reportar']),
+    CON_PERMISOS(['asistencias:reportar:reporte_asistencias']),
     {
       match: 'FROM asistencia_sesiones s',
       result: () => ({ rows: [{ id: 1, grado: '1er', sede: 'Progreso', total_asistencias: 3 }] }),
@@ -352,7 +354,7 @@ test('GET /api/asistencias/sesiones: profesor con reportar ve todas las sedes', 
 // Borrar una clase del reporte: solo administradores, y con cascada.
 test('DELETE /api/asistencias/sesiones/:id: un profesor no puede borrar una clase', async () => {
   await start();
-  install([CON_PERMISOS(['asistencias:ver', 'asistencias:registrar', 'asistencias:reportar'])]);
+  install([CON_PERMISOS(['asistencias:ver', 'asistencias:registrar:tomar_asistencia', 'asistencias:reportar:reporte_asistencias'])]);
   const res = await request('DELETE', '/api/asistencias/sesiones/9', { token: token('profesor', 3) });
   assert.equal(res.status, 403);
 });

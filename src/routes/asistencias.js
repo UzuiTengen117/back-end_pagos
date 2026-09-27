@@ -71,7 +71,7 @@ router.get('/mis-asistencias', async (req, res) => {
 
 // El profesor abre la clase del dia. Reutiliza la sesion abierta del mismo
 // grado y sede en vez de crear otra, para no fragmentar el registro.
-router.post('/abrir-sesion', permite('asistencias', 'registrar'), async (req, res) => {
+router.post('/abrir-sesion', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
   try {
     const { grado, sede } = req.body;
     if (!grado) {
@@ -83,7 +83,7 @@ router.post('/abrir-sesion', permite('asistencias', 'registrar'), async (req, re
 
     const abierta = await pool.query(
       `SELECT * FROM asistencia_sesiones
-       WHERE profesor_id = $1 AND grado = $2 AND sede = $3 AND abierta = TRUE`,
+       WHERE profesor_id = $1 AND LOWER(grado) = LOWER($2) AND sede = $3 AND abierta = TRUE`,
       [req.user.id, grado, sede]
     );
     if (abierta.rows.length > 0) {
@@ -102,7 +102,7 @@ router.post('/abrir-sesion', permite('asistencias', 'registrar'), async (req, re
   }
 });
 
-router.post('/cerrar-sesion/:id', permite('asistencias', 'registrar'), async (req, res) => {
+router.post('/cerrar-sesion/:id', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
@@ -123,7 +123,7 @@ router.post('/cerrar-sesion/:id', permite('asistencias', 'registrar'), async (re
 
 // Sesion abierta actual del profesor, para que el frontend la recupere
 // al recargar en lugar de perderla.
-router.get('/sesion-actual', permite('asistencias', 'registrar'), async (req, res) => {
+router.get('/sesion-actual', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT * FROM asistencia_sesiones
@@ -140,7 +140,7 @@ router.get('/sesion-actual', permite('asistencias', 'registrar'), async (req, re
 // Listado de clases de todas las sedes, que es la base del reporte.
 // Va con su propio permiso (`reportar`) para que ver una clase en vivo no
 // implica poder ver el historial completo de la escuela.
-router.get('/sesiones', permite('asistencias', 'reportar'), async (req, res) => {
+router.get('/sesiones', permite('asistencias', 'reportar:reporte_asistencias'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT s.*, u.nombre AS profesor_nombre, u.primer_apellido AS profesor_apellido,
@@ -188,7 +188,7 @@ router.delete('/sesiones/:id', authorize('admin'), async (req, res) => {
 
 // Alumnos esperados en la sesion (mismo grado y sede) con su estado de
 // asistencia. El profesor ve tambien a quien no ha llegado todavia.
-router.get('/sesion/:id/alumnos', permite('asistencias', 'ver'), async (req, res) => {
+router.get('/sesion/:id/alumnos', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
   try {
     const { id } = req.params;
     const sesion = await pool.query(
@@ -206,7 +206,7 @@ router.get('/sesion/:id/alumnos', permite('asistencias', 'ver'), async (req, res
        FROM alumnos a
        JOIN usuarios u ON a.usuario_id = u.id
        LEFT JOIN asistencias asis ON asis.alumno_id = a.id AND asis.sesion_id = $1
-       WHERE a.grado = $2 AND a.sede = $3
+       WHERE LOWER(a.grado) = LOWER($2) AND a.sede = $3
        ORDER BY a.primer_apellido ASC, a.nombre ASC`,
       [id, grado, sede]
     );
@@ -218,7 +218,7 @@ router.get('/sesion/:id/alumnos', permite('asistencias', 'ver'), async (req, res
 
 // Registro por escaneo de QR o por captura manual. El cuerpo es el mismo
 // para ambos: cambia solo de donde sale el alumnoId.
-router.post('/registrar', permite('asistencias', 'registrar'), async (req, res) => {
+router.post('/registrar', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
   try {
     const { token, alumno_id, sesion_id } = req.body;
     if (!sesion_id) {
@@ -262,8 +262,13 @@ router.post('/registrar', permite('asistencias', 'registrar'), async (req, res) 
     if (alumno.rows.length === 0) {
       return res.status(404).json({ message: 'Alumno no encontrado' });
     }
-    const a = alumno.rows[0];
-    if (a.grado !== grado || a.sede !== sede) {
+const a = alumno.rows[0];
+    // Comparacion sin distincion de mayusculas, minusculas ni espacios extra.
+    // En taekwondo los grados tienen notacion suelta ("Cinta Negra 1er Dan",
+    // "cinta negra primer dan", etc.) y el scanner no puede depender de que
+    // se haya escrito igual en alumno y en sesion.
+    function norm(s) { return (s || '').trim().toLowerCase(); }
+    if (norm(a.grado) !== norm(grado) || norm(a.sede) !== norm(sede)) {
       return res.status(400).json({
         message: `El alumno es de ${a.grado} / ${a.sede} y esta clase es de ${grado} / ${sede}`,
       });
@@ -297,7 +302,7 @@ router.post('/registrar', permite('asistencias', 'registrar'), async (req, res) 
 
 // Quita un registro. Necesario cuando el profesor escanea a la persona
 // equivocada y necesita corregirlo durante la misma clase.
-router.delete('/:id', permite('asistencias', 'registrar'), async (req, res) => {
+router.delete('/:id', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
   try {
     const { id } = req.params;
     // El borrado se limita a sesiones del propio profesor: sin este filtro

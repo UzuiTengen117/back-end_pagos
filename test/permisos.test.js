@@ -32,10 +32,9 @@ test('GET /api/permisos/modulos expone exactamente las 9 categorías', async () 
   }
   assert.equal(Object.keys(res.data).length, 9, 'deben ser exactamente 9 categorías');
 
-  assert.ok(res.data.asistencias.acciones.ver);
-  assert.ok(res.data.asistencias.acciones.registrar);
-  assert.ok(res.data.asistencias.acciones.reportar, 'debe existir la acción reportar');
-  assert.equal(Object.keys(res.data.asistencias.acciones).length, 3);
+  assert.ok(res.data.asistencias.subcategorias.tomar_asistencia.acciones.registrar);
+  assert.ok(res.data.asistencias.subcategorias.reporte_asistencias.acciones.reportar, 'debe existir la acción reportar');
+  assert.equal(Object.keys(res.data.asistencias.subcategorias).length, 2);
 
   assert.ok(res.data.comprobantes.acciones.crear);
   assert.ok(res.data.comprobantes.acciones.editar);
@@ -90,7 +89,7 @@ test('GET /api/permisos/defaults/:rol devuelve los permisos base', async () => {
   }
   assert.ok(!prof.data.permisos.includes('solicitudes_reembolso:editar'));
   assert.ok(!prof.data.permisos.includes('solicitudes_reembolso:eliminar'));
-  assert.ok(prof.data.permisos.includes('asistencias:reportar'), 'profesor debe poder generar reportes');
+  assert.ok(prof.data.permisos.includes('asistencias:reportar:reporte_asistencias'), 'profesor debe poder generar reportes');
   assert.ok(prof.data.permisos.includes('usuarios:crear:estudiantes'));
   assert.ok(prof.data.permisos.includes('usuarios:ver:profesores'));
   assert.ok(prof.data.permisos.includes('usuarios:ver:administradores'), 'el profesor puede ver administradores');
@@ -236,8 +235,8 @@ test('PUT /api/permisos/usuario/:id: si una inserción falla, revierte todo', as
     token: token('admin'),
     body: {
       permisos: [
-        { modulo: 'asistencias', accion: 'ver' },
-        { modulo: 'asistencias', accion: 'reportar' },
+        { modulo: 'asistencias', accion: 'registrar:tomar_asistencia' },
+        { modulo: 'asistencias', accion: 'reportar:reporte_asistencias' },
       ],
     },
   });
