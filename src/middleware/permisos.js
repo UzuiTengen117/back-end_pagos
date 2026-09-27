@@ -65,7 +65,7 @@ const MODULOS_ACCIONES = {
   },
   asistencias: {
     label: 'Asistencias',
-    acciones: { ver: 'Ver', registrar: 'Registrar' },
+    acciones: { ver: 'Ver', registrar: 'Registrar', reportar: 'Reportar' },
   },
 };
 
@@ -82,7 +82,7 @@ const DEFAULTS = {
     'solicitudes_reembolso:ver', 'solicitudes_reembolso:aprobar', 'solicitudes_reembolso:rechazar',
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
-    'asistencias:ver', 'asistencias:registrar',
+    'asistencias:ver', 'asistencias:registrar', 'asistencias:reportar',
   ],
   estudiante: ['solicitudes_reembolso:ver'],
   admin: null,
@@ -181,19 +181,30 @@ const permite = (modulo, accion) => {
 // no es administrador, se descartan las acciones bloqueadas. Los estudiantes
 // nunca reciben permisos asignados: se dejan siempre con los por defecto.
 async function reemplazarPermisos(usuarioId, permisos, rolDestino) {
-  await pool.query('DELETE FROM permisos_usuario WHERE usuario_id = $1', [usuarioId]);
-  if (rolDestino === 'estudiante') {
-    return;
-  }
-  const lista = Array.isArray(permisos) ? permisos : [];
-  const esAdminDestino = rolDestino === 'admin';
-  for (const p of lista) {
-    if (!p || !esValido(p.modulo, p.accion)) continue;
-    if (!esAdminDestino && esBloqueada(p.modulo, p.accion)) continue;
-    await pool.query(
-      'INSERT INTO permisos_usuario (usuario_id, modulo, accion) VALUES ($1, $2, $3)',
-      [usuarioId, p.modulo, p.accion]
-    );
+  // Todo el reemplazo va en una transacción: sin ella, un fallo a mitad del
+  // bucle de inserciones deja al usuario con la mitad de sus permisos.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM permisos_usuario WHERE usuario_id = $1', [usuarioId]);
+    if (rolDestino !== 'estudiante') {
+      const lista = Array.isArray(permisos) ? permisos : [];
+      const esAdminDestino = rolDestino === 'admin';
+      for (const p of lista) {
+        if (!p || !esValido(p.modulo, p.accion)) continue;
+        if (!esAdminDestino && esBloqueada(p.modulo, p.accion)) continue;
+        await client.query(
+          'INSERT INTO permisos_usuario (usuario_id, modulo, accion) VALUES ($1, $2, $3)',
+          [usuarioId, p.modulo, p.accion]
+        );
+      }
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 }
 

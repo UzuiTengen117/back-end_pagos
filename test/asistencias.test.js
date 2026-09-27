@@ -312,3 +312,39 @@ test('el estudiante no puede abrir sesiones de clase', async () => {
   });
   assert.equal(res.status, 403);
 });
+
+// El reporte de todas las sedes va con su propio permiso, separado de `ver`.
+const CON_PERMISOS = (permisos) => ({
+  match: 'FROM permisos_usuario WHERE usuario_id = $1',
+  result: () => ({
+    rows: permisos.map((p) => {
+      const [modulo, accion] = p.split(':');
+      return { modulo, accion };
+    }),
+  }),
+});
+
+test('GET /api/asistencias/sesiones: profesor sin el permiso reportar → 403', async () => {
+  await start();
+  install([CON_PERMISOS(['asistencias:ver', 'asistencias:registrar'])]);
+  const res = await request('GET', '/api/asistencias/sesiones', { token: token('profesor', 3) });
+  assert.equal(res.status, 403);
+});
+
+test('GET /api/asistencias/sesiones: profesor con reportar ve todas las sedes', async () => {
+  await start();
+  const { calls } = install([
+    CON_PERMISOS(['asistencias:ver', 'asistencias:reportar']),
+    {
+      match: 'FROM asistencia_sesiones s',
+      result: () => ({ rows: [{ id: 1, grado: '1er', sede: 'Progreso', total_asistencias: 3 }] }),
+    },
+  ]);
+  const res = await request('GET', '/api/asistencias/sesiones', { token: token('profesor', 3) });
+  assert.equal(res.status, 200);
+  assert.equal(res.data.length, 1);
+  // Sin filtro en el backend: el listado entra completo y el frontend acota.
+  const query = calls.find((c) => c.text.includes('FROM asistencia_sesiones s'));
+  assert.ok(!query.text.includes('WHERE'), 'el listado no debe filtrar por sede ni grado');
+  assert.ok(!query.params, 'sin params: no hay condiciones de usuario que filtrar');
+});

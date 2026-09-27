@@ -136,7 +136,10 @@ router.get('/sesion-actual', permite('asistencias', 'registrar'), async (req, re
   }
 });
 
-router.get('/sesiones', permite('asistencias', 'ver'), async (req, res) => {
+// Listado de clases de todas las sedes, que es la base del reporte.
+// Va con su propio permiso (`reportar`) para que ver una clase en vivo no
+// implica poder ver el historial completo de la escuela.
+router.get('/sesiones', permite('asistencias', 'reportar'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT s.*, u.nombre AS profesor_nombre, u.primer_apellido AS profesor_apellido,

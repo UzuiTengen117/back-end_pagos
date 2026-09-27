@@ -34,6 +34,8 @@ test('GET /api/permisos/modulos expone exactamente las 9 categorías', async () 
 
   assert.ok(res.data.asistencias.acciones.ver);
   assert.ok(res.data.asistencias.acciones.registrar);
+  assert.ok(res.data.asistencias.acciones.reportar, 'debe existir la acción reportar');
+  assert.equal(Object.keys(res.data.asistencias.acciones).length, 3);
 
   assert.ok(res.data.comprobantes.acciones.crear);
   assert.ok(res.data.comprobantes.acciones.editar);
@@ -88,6 +90,7 @@ test('GET /api/permisos/defaults/:rol devuelve los permisos base', async () => {
   }
   assert.ok(!prof.data.permisos.includes('solicitudes_reembolso:editar'));
   assert.ok(!prof.data.permisos.includes('solicitudes_reembolso:eliminar'));
+  assert.ok(prof.data.permisos.includes('asistencias:reportar'), 'profesor debe poder generar reportes');
   assert.ok(prof.data.permisos.includes('usuarios:crear:estudiantes'));
   assert.ok(prof.data.permisos.includes('usuarios:ver:profesores'));
   assert.ok(prof.data.permisos.includes('usuarios:ver:administradores'), 'el profesor puede ver administradores');
@@ -211,6 +214,37 @@ test('PUT /api/permisos/usuario/:id: acciones inválidas se ignoran', async () =
   assert.equal(res.status, 200);
   const inserts = calls.filter((c) => c.text.includes('INSERT INTO permisos_usuario'));
   assert.equal(inserts.length, 1, 'solo se debe insertar la acción válida');
+  assert.ok(calls.some((c) => c.text === 'COMMIT'), 'debe confirmar la transacción');
+});
+
+test('PUT /api/permisos/usuario/:id: si una inserción falla, revierte todo', async () => {
+  await start();
+  let inserts = 0;
+  const { calls } = install([
+    targetRol('profesor'),
+    { match: 'DELETE FROM permisos_usuario WHERE usuario_id = $1', result: () => ({ rows: [] }) },
+    {
+      match: 'INSERT INTO permisos_usuario',
+      result: () => {
+        inserts += 1;
+        if (inserts === 2) throw new Error('fallo de escritura');
+        return { rows: [{ id: 1 }] };
+      },
+    },
+  ]);
+  const res = await request('PUT', '/api/permisos/usuario/5', {
+    token: token('admin'),
+    body: {
+      permisos: [
+        { modulo: 'asistencias', accion: 'ver' },
+        { modulo: 'asistencias', accion: 'reportar' },
+      ],
+    },
+  });
+  assert.equal(res.status, 500);
+  assert.ok(calls.some((c) => c.text === 'BEGIN'), 'debe abrir la transacción');
+  assert.ok(calls.some((c) => c.text === 'ROLLBACK'), 'debe revertir');
+  assert.ok(!calls.some((c) => c.text === 'COMMIT'), 'no debe confirmar si algo fallo');
 });
 
 test('PUT /api/permisos/usuario/:id: crear/editar/eliminar administradores no se asignan a un no-admin', async () => {

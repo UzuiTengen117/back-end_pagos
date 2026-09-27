@@ -11,12 +11,21 @@ const DEFAULT_HANDLERS = [
   },
 ];
 
+// Transacciones: el cliente usa el mismo despachador que pool.query, asi que
+// BEGIN/COMMIT/ROLLBACK necesitan handlers o el mock lanzaria.
+const TX_HANDLERS = [
+  { match: 'BEGIN', result: () => ({ rows: [] }) },
+  { match: 'COMMIT', result: () => ({ rows: [] }) },
+  { match: 'ROLLBACK', result: () => ({ rows: [] }) },
+];
+
 function install(handlers = []) {
   const calls = [];
-  const all = [...DEFAULT_HANDLERS, ...handlers];
+  const all = [...DEFAULT_HANDLERS, ...TX_HANDLERS, ...handlers];
   const original = pool.query.bind(pool);
+  const originalConnect = pool.connect.bind(pool);
 
-  pool.query = async (text, params) => {
+  const run = async (text, params) => {
     const call = { text, params };
     calls.push(call);
     const handler = all.find((h) => text.includes(h.match));
@@ -26,11 +35,20 @@ function install(handlers = []) {
     return handler.result(call, calls);
   };
 
+  pool.query = run;
+
+  // Cliente transaccional minimo: solo query() y release().
+  pool.connect = async () => ({
+    query: run,
+    release() {},
+  });
+
   return {
     calls,
     pool,
     restore() {
       pool.query = original;
+      pool.connect = originalConnect;
     },
   };
 }
