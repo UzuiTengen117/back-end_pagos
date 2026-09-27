@@ -123,7 +123,7 @@ router.post('/cerrar-sesion/:id', permite('asistencias', 'registrar:tomar_asiste
 
 // Sesion abierta actual del profesor, para que el frontend la recupere
 // al recargar en lugar de perderla.
-router.get('/sesion-actual', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
+router.get('/sesion-actual', permite('asistencias', 'ver:tomar_asistencia'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT * FROM asistencia_sesiones
@@ -188,7 +188,7 @@ router.delete('/sesiones/:id', authorize('admin'), async (req, res) => {
 
 // Alumnos esperados en la sesion (mismo grado y sede) con su estado de
 // asistencia. El profesor ve tambien a quien no ha llegado todavia.
-router.get('/sesion/:id/alumnos', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
+router.get('/sesion/:id/alumnos', permite('asistencias', 'ver:tomar_asistencia'), async (req, res) => {
   try {
     const { id } = req.params;
     const sesion = await pool.query(
@@ -263,12 +263,18 @@ router.post('/registrar', permite('asistencias', 'registrar:tomar_asistencia'), 
       return res.status(404).json({ message: 'Alumno no encontrado' });
     }
 const a = alumno.rows[0];
-    // Comparacion sin distincion de mayusculas, minusculas ni espacios extra.
-    // En taekwondo los grados tienen notacion suelta ("Cinta Negra 1er Dan",
-    // "cinta negra primer dan", etc.) y el scanner no puede depender de que
-    // se haya escrito igual en alumno y en sesion.
+    // Comparacion flexible por color base: "Cinta roja avanzada" coincide con "Cinta Roja",
+    // "cinta negra 1er dan" con "Cinta Negra 1er Dan", etc.
+    // Esto permite que existan variaciones en la BD (avanzado, primer dan, etc.)
+    // sin bloquear el escaneo.
     function norm(s) { return (s || '').trim().toLowerCase(); }
-    if (norm(a.grado) !== norm(grado) || norm(a.sede) !== norm(sede)) {
+    function colorBase(s) {
+      const str = norm(s);
+      // Extrae la primera palabra de color conocida despues de "cinta "
+      const match = str.match(/cinta\s+(blanca|amarilla|naranja|verde|azul|roja|negra)/);
+      return match ? match[1] : str;
+    }
+    if (colorBase(a.grado) !== colorBase(grado) || norm(a.sede) !== norm(sede)) {
       return res.status(400).json({
         message: `El alumno es de ${a.grado} / ${a.sede} y esta clase es de ${grado} / ${sede}`,
       });

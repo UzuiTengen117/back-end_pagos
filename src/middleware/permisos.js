@@ -29,7 +29,7 @@ const MODULOS_ACCIONES = {
       },
       profesores: {
         label: 'Profesores',
-        acciones: { ver: 'Ver', crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+        acciones: { ver: 'Ver', crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar', ver_lista: 'Ver Lista' },
       },
       administradores: {
         label: 'Administradores',
@@ -68,11 +68,11 @@ const MODULOS_ACCIONES = {
     subcategorias: {
       tomar_asistencia: {
         label: 'Tomar Asistencia',
-        acciones: { registrar: 'Registrar' },
+        acciones: { registrar: 'Registrar', ver: 'Ver' },
       },
       reporte_asistencias: {
         label: 'Reporte de Asistencias',
-        acciones: { reportar: 'Reportar' },
+        acciones: { reportar: 'Reportar', ver: 'Ver', eliminar: 'Eliminar' },
       },
     },
   },
@@ -87,11 +87,12 @@ const DEFAULTS = {
     'comprobantes:crear', 'comprobantes:editar', 'comprobantes:eliminar',
     'alumnos:crear', 'alumnos:editar', 'alumnos:eliminar',
     'usuarios:crear:estudiantes', 'usuarios:editar:estudiantes', 'usuarios:eliminar:estudiantes',
-    'usuarios:ver:profesores', 'usuarios:ver:administradores',
+    'usuarios:ver:profesores', 'usuarios:ver_lista:profesores', 'usuarios:eliminar:profesores',
+    'usuarios:ver:administradores',
     'solicitudes_reembolso:ver', 'solicitudes_reembolso:aprobar', 'solicitudes_reembolso:rechazar',
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
-    'asistencias:registrar:tomar_asistencia', 'asistencias:reportar:reporte_asistencias',
+    'asistencias:registrar:tomar_asistencia', 'asistencias:ver:tomar_asistencia', 'asistencias:reportar:reporte_asistencias', 'asistencias:ver:reporte_asistencias', 'asistencias:eliminar:reporte_asistencias',
   ],
   estudiante: ['solicitudes_reembolso:ver'],
   admin: null,
