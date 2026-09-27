@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS asistencias (
   alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
   registrado_por INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
   metodo VARCHAR(20) NOT NULL DEFAULT 'qr' CHECK (metodo IN ('qr', 'manual')),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Un alumno no puede quedar registrado dos veces en la misma sesion.
@@ -157,3 +157,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS asistencias_sesion_alumno_unique
   ON asistencias (sesion_id, alumno_id);
 
 CREATE INDEX IF NOT EXISTS asistencias_alumno_idx ON asistencias (alumno_id);
+
+-- Repara despliegues donde la tabla ya existia sin la columna, o con la columna
+-- creada sin default. Ambas sentencias son idempotentes: se pueden correr las
+-- veces que haga falta sin tocar los registros que ya tienen hora.
+ALTER TABLE asistencias ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE asistencias ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP;
+
+-- TIMESTAMPTZ y no TIMESTAMP: Supabase corre la sesion en UTC, y un TIMESTAMP
+-- sin zona se interpretaria en la zona del navegador, con la hora corrida por el
+-- huso. Con timestamptz el instante es inequivoco y el navegador lo muestra bien.
+ALTER TABLE asistencias
+  ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC';

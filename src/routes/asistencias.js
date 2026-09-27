@@ -270,9 +270,12 @@ router.post('/registrar', permite('asistencias', 'registrar'), async (req, res) 
     }
 
     const metodo = token ? 'qr' : 'manual';
+    // created_at se fija aqui de forma explicita en lugar de confiar en el
+    // DEFAULT de la columna: si el despliegue arrastra una tabla creada sin ese
+    // default, el registro se guardaba con la hora nula y la lista salia en "-".
     const registro = await pool.query(
-      `INSERT INTO asistencias (sesion_id, alumno_id, registrado_por, metodo)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO asistencias (sesion_id, alumno_id, registrado_por, metodo, created_at)
+       VALUES ($1, $2, $3, $4, NOW())
        ON CONFLICT (sesion_id, alumno_id) DO NOTHING
        RETURNING *`,
       [sesion_id, alumnoId, req.user.id, metodo]
