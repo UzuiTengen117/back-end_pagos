@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 
-// Las 8 categorías del sistema. Dentro de cada una están sus acciones.
+// Las 9 categorías del sistema. Dentro de cada una están sus acciones.
 // El módulo `usuarios` usa subcategorías (estudiantes/profesores/administradores).
 // Las acciones con sufijo quedan codificadas en `accion` como `crear:estudiantes`.
 const MODULOS_ACCIONES = {
@@ -63,6 +63,10 @@ const MODULOS_ACCIONES = {
     label: 'Becas',
     acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
   },
+  asistencias: {
+    label: 'Asistencias',
+    acciones: { ver: 'Ver', registrar: 'Registrar' },
+  },
 };
 
 // Permisos por defecto según el rol. Se usan mientras el usuario no tenga
@@ -78,6 +82,7 @@ const DEFAULTS = {
     'solicitudes_reembolso:ver', 'solicitudes_reembolso:aprobar', 'solicitudes_reembolso:rechazar',
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
+    'asistencias:ver', 'asistencias:registrar',
   ],
   estudiante: ['solicitudes_reembolso:ver'],
   admin: null,

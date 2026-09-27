@@ -17,7 +17,7 @@ function targetRol(rol) {
   return { match: 'SELECT rol FROM usuarios WHERE id = $1', result: () => ({ rows: [{ rol }] }) };
 }
 
-test('GET /api/permisos/modulos expone exactamente las 8 categorías', async () => {
+test('GET /api/permisos/modulos expone exactamente las 9 categorías', async () => {
   await start();
   install();
   const res = await request('GET', '/api/permisos/modulos', { token: token('admin') });
@@ -25,12 +25,15 @@ test('GET /api/permisos/modulos expone exactamente las 8 categorías', async () 
 
   const esperados = [
     'pagos', 'inscripciones', 'comprobantes', 'alumnos',
-    'usuarios', 'solicitudes_reembolso', 'precios', 'becas',
+    'usuarios', 'solicitudes_reembolso', 'precios', 'becas', 'asistencias',
   ];
   for (const mod of esperados) {
     assert.ok(res.data[mod], `debe existir el módulo ${mod}`);
   }
-  assert.equal(Object.keys(res.data).length, 8, 'deben ser exactamente 8 categorías');
+  assert.equal(Object.keys(res.data).length, 9, 'deben ser exactamente 9 categorías');
+
+  assert.ok(res.data.asistencias.acciones.ver);
+  assert.ok(res.data.asistencias.acciones.registrar);
 
   assert.ok(res.data.comprobantes.acciones.crear);
   assert.ok(res.data.comprobantes.acciones.editar);

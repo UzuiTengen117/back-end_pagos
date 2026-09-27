@@ -122,3 +122,38 @@ CREATE TABLE IF NOT EXISTS permisos_usuario (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS alumnos_usuario_id_unique ON alumnos (usuario_id);
+
+-- Asistencia a clases de taekwondo.
+-- No hay entidad "clase": una sesion se define por grado + sede + fecha,
+-- porque en taekwondo el grupo se forma por grado y sede, no por materia.
+CREATE TABLE IF NOT EXISTS asistencia_sesiones (
+  id SERIAL PRIMARY KEY,
+  grado VARCHAR(50) NOT NULL,
+  sede VARCHAR(50) NOT NULL CHECK (sede IN ('Progreso', 'Morelos')),
+  fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+  profesor_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  abierta BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  cerrada_at TIMESTAMP
+);
+
+-- Una sola sesion abierta por profesor, grado y sede. Impide que dos
+-- profesores abran la misma clase al mismo tiempo y generen registros duplicados.
+CREATE UNIQUE INDEX IF NOT EXISTS asistencia_sesiones_abierta_unica
+  ON asistencia_sesiones (profesor_id, grado, sede)
+  WHERE abierta = TRUE;
+
+CREATE TABLE IF NOT EXISTS asistencias (
+  id SERIAL PRIMARY KEY,
+  sesion_id INTEGER NOT NULL REFERENCES asistencia_sesiones(id) ON DELETE CASCADE,
+  alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+  registrado_por INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  metodo VARCHAR(20) NOT NULL DEFAULT 'qr' CHECK (metodo IN ('qr', 'manual')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Un alumno no puede quedar registrado dos veces en la misma sesion.
+CREATE UNIQUE INDEX IF NOT EXISTS asistencias_sesion_alumno_unique
+  ON asistencias (sesion_id, alumno_id);
+
+CREATE INDEX IF NOT EXISTS asistencias_alumno_idx ON asistencias (alumno_id);
