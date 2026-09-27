@@ -6,7 +6,7 @@ Uso:
     python generar_reporte.py                          # usa DATABASE_URL del entorno o de .env
     python generar_reporte.py --salida ruta.xlsx       # ruta de salida personalizada
 
-Requisitos:
+Requisitoss:
     pip install -r requirements.txt
 """
 import os
