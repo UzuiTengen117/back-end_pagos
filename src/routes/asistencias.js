@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { permite } = require('../middleware/permisos');
+const { authorize } = require('../middleware/auth');
 const { isEstudiante, alumnoScope } = require('../middleware/scope');
 const { internalError } = require('../utils/httpError');
 const { emitirTokenQr, verificarTokenQr } = require('../utils/qrToken');
@@ -148,9 +149,38 @@ router.get('/sesiones', permite('asistencias', 'reportar'), async (req, res) => 
        JOIN usuarios u ON s.profesor_id = u.id
        LEFT JOIN asistencias a ON a.sesion_id = s.id
        GROUP BY s.id, u.nombre, u.primer_apellido
-       ORDER BY s.fecha DESC, s.id DESC`
+        ORDER BY s.fecha DESC, s.id DESC`
     );
     res.json(result.rows);
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
+// Borrar una clase del reporte. Solo administradores: la clase arrastra sus
+// asistencias por ON DELETE CASCADE, asi que la decision no se delega a un
+// permiso granular.
+router.delete('/sesiones/:id', authorize('admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) {
+      return res.status(400).json({ message: 'El id de la sesion es requerido' });
+    }
+    const result = await pool.query(
+      `DELETE FROM asistencia_sesiones
+       WHERE id = $1
+       RETURNING id, grado, sede, fecha,
+                 (SELECT COUNT(*)::int FROM asistencias a WHERE a.sesion_id = $1) AS asistencias_borradas`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Clase no encontrada' });
+    }
+    const b = result.rows[0];
+    res.json({
+      message: `Clase del ${b.fecha} eliminada junto con ${b.asistencias_borradas} asistencias`,
+      asistencias_eliminadas: b.asistencias_borradas,
+    });
   } catch (error) {
     internalError(res, error);
   }

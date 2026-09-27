@@ -348,3 +348,41 @@ test('GET /api/asistencias/sesiones: profesor con reportar ve todas las sedes', 
   assert.ok(!query.text.includes('WHERE'), 'el listado no debe filtrar por sede ni grado');
   assert.ok(!query.params, 'sin params: no hay condiciones de usuario que filtrar');
 });
+
+// Borrar una clase del reporte: solo administradores, y con cascada.
+test('DELETE /api/asistencias/sesiones/:id: un profesor no puede borrar una clase', async () => {
+  await start();
+  install([CON_PERMISOS(['asistencias:ver', 'asistencias:registrar', 'asistencias:reportar'])]);
+  const res = await request('DELETE', '/api/asistencias/sesiones/9', { token: token('profesor', 3) });
+  assert.equal(res.status, 403);
+});
+
+test('DELETE /api/asistencias/sesiones/:id: el admin borra la clase y reporta cuantas asistencias se fueron', async () => {
+  await start();
+  const { calls } = install([
+    {
+      match: 'DELETE FROM asistencia_sesiones',
+      result: () => ({ rows: [{ id: 9, grado: '1er', sede: 'Progreso', fecha: '2026-09-27', asistencias_borradas: 4 }] }),
+    },
+  ]);
+  const res = await request('DELETE', '/api/asistencias/sesiones/9', { token: token('admin', 1) });
+  assert.equal(res.status, 200);
+  assert.equal(res.data.asistencias_eliminadas, 4);
+  assert.ok(/4 asistencias/.test(res.data.message), 'el mensaje debe decir cuantas se borraron');
+  const del = calls.find((c) => c.text.includes('DELETE FROM asistencia_sesiones'));
+  assert.deepEqual(del.params, [9]);
+});
+
+test('DELETE /api/asistencias/sesiones/:id: 404 si la clase no existe', async () => {
+  await start();
+  install([{ match: 'DELETE FROM asistencia_sesiones', result: () => ({ rows: [] }) }]);
+  const res = await request('DELETE', '/api/asistencias/sesiones/999', { token: token('admin', 1) });
+  assert.equal(res.status, 404);
+});
+
+test('DELETE /api/asistencias/sesiones/:id: 400 si el id no es un numero', async () => {
+  await start();
+  install();
+  const res = await request('DELETE', '/api/asistencias/sesiones/abc', { token: token('admin', 1) });
+  assert.equal(res.status, 400);
+});
