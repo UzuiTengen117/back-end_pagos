@@ -54,7 +54,7 @@ router.get('/mis-asistencias', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT s.id, s.grado, s.sede, s.fecha, s.abierta,
-              a.registro_id, a.metodo, a.created_at AS registrado_at
+              a.id AS registro_id, a.metodo, a.created_at AS registrado_at
        FROM asistencias a
        JOIN asistencia_sesiones s ON a.sesion_id = s.id
        JOIN alumnos al ON a.alumno_id = al.id
