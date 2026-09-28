@@ -63,6 +63,18 @@ const MODULOS_ACCIONES = {
     label: 'Becas',
     acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
   },
+  eventos: {
+    label: 'Eventos',
+    // El listado y la inscripcion no se giran: son publicos para cualquier
+    // sesion iniciada, igual que becas o precios. Lo que se restringe es la
+    // gestion del evento y la lectura de la lista de inscritos.
+    acciones: {
+      ver_inscritos: 'Ver Inscritos',
+      crear: 'Crear',
+      editar: 'Editar',
+      eliminar: 'Eliminar',
+    },
+  },
   asistencias: {
     label: 'Asistencias',
     subcategorias: {
@@ -93,6 +105,7 @@ const DEFAULTS = {
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
     'asistencias:registrar:tomar_asistencia', 'asistencias:ver:tomar_asistencia', 'asistencias:reportar:reporte_asistencias', 'asistencias:ver:reporte_asistencias', 'asistencias:eliminar:reporte_asistencias',
+    'eventos:crear', 'eventos:editar', 'eventos:eliminar', 'eventos:ver_inscritos',
   ],
   estudiante: ['solicitudes_reembolso:ver'],
   admin: null,

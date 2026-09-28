@@ -169,3 +169,58 @@ ALTER TABLE asistencias ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP;
 -- huso. Con timestamptz el instante es inequivoco y el navegador lo muestra bien.
 ALTER TABLE asistencias
   ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC';
+
+-- Torneos y dual meets de taekwondo.
+-- `sede` NO lleva CHECK como el resto de las tablas: un torneo puede celebrarse
+-- fuera de la academia (en otro gimnasio o en otra ciudad), asi que aqui es
+-- texto libre y el frontend sugiere las dos sedes propias.
+CREATE TABLE IF NOT EXISTS eventos (
+  id SERIAL PRIMARY KEY,
+  nombre VARCHAR(255) NOT NULL,
+  tipo VARCHAR(30) NOT NULL CHECK (tipo IN ('torneo', 'dual_meet', 'open', 'otro')),
+  -- TIMESTAMPTZ por la misma razon que asistencias.created_at: el instante del
+  -- torneo es unico, no una fecha de calendario. El reloj regresivo del alumno
+  -- se calcula contra este valor.
+  fecha_inicio TIMESTAMPTZ NOT NULL,
+  sede VARCHAR(50),
+  lugar VARCHAR(255),
+  categorias VARCHAR(255),
+  descripcion TEXT,
+  precio_inscripcion NUMERIC(10, 2) NOT NULL DEFAULT 0,
+  cupo_maximo INTEGER,
+  link_registro VARCHAR(500),
+  -- Data URL (igual que usuarios.foto) porque el despliegue es serverless y no
+  -- hay disco donde dejar el archivo. Limite de 2MB aplicado por multer.
+  imagen TEXT,
+  -- Version reducida que genera el navegador antes de subir. El listado NUNCA
+  -- pide `imagen`: a 2MB el base64 son 2.67MB por evento y dos carteles ya
+  -- reventan el limite de 4.5MB de respuesta de Vercel. Esta columna mantiene
+  -- las tarjetas livianas y la original se pide solo al abrir un evento.
+  imagen_thumb TEXT,
+  estado VARCHAR(30) NOT NULL DEFAULT 'programado'
+    CHECK (estado IN ('programado', 'en_curso', 'finalizado', 'cancelado')),
+  creado_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- El listado ordena por fecha y no por id, asi que el indice principal es la
+-- propia columna del reloj. Los pasados se caen solos del orden.
+CREATE INDEX IF NOT EXISTS eventos_fecha_inicio_idx ON eventos (fecha_inicio);
+
+-- Inscripcion del alumno a un evento. Guarda usuario_id ademas de alumno_id
+-- para no depender de un JOIN cada vez que se valida "este alumno ya va".
+CREATE TABLE IF NOT EXISTS eventos_inscripciones (
+  id SERIAL PRIMARY KEY,
+  evento_id INTEGER NOT NULL REFERENCES eventos(id) ON DELETE CASCADE,
+  alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  estado VARCHAR(20) NOT NULL DEFAULT 'inscrito' CHECK (estado IN ('inscrito', 'cancelada')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Un alumno no puede quedar inscrito dos veces en el mismo evento.
+CREATE UNIQUE INDEX IF NOT EXISTS eventos_inscripciones_unica
+  ON eventos_inscripciones (evento_id, alumno_id);
+
+CREATE INDEX IF NOT EXISTS eventos_inscripciones_alumno_idx ON eventos_inscripciones (alumno_id);
