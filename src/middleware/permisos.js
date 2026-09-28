@@ -68,11 +68,21 @@ const MODULOS_ACCIONES = {
     // El listado y la inscripcion no se giran: son publicos para cualquier
     // sesion iniciada, igual que becas o precios. Lo que se restringe es la
     // gestion del evento y la lectura de la lista de inscritos.
-    acciones: {
-      ver_inscritos: 'Ver Inscritos',
-      crear: 'Crear',
-      editar: 'Editar',
-      eliminar: 'Eliminar',
+    //
+    // Va con subcategorias por la misma razon que asistencias: organizar un
+    // torneo y consultar la lista de confirmados son decisiones distintas y las
+    // toma gente distinta. Un entrenador que solo lleva el control de quien se
+    // inscribio no necesita poder crear ni borrar eventos, y antes no habia
+    // forma de concederle lo uno sin lo otro.
+    subcategorias: {
+      eventos: {
+        label: 'Eventos',
+        acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+      },
+      reporte_eventos: {
+        label: 'Reporte de Eventos',
+        acciones: { ver: 'Ver' },
+      },
     },
   },
   asistencias: {
@@ -105,7 +115,7 @@ const DEFAULTS = {
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
     'asistencias:registrar:tomar_asistencia', 'asistencias:ver:tomar_asistencia', 'asistencias:reportar:reporte_asistencias', 'asistencias:ver:reporte_asistencias', 'asistencias:eliminar:reporte_asistencias',
-    'eventos:crear', 'eventos:editar', 'eventos:eliminar', 'eventos:ver_inscritos',
+    'eventos:crear:eventos', 'eventos:editar:eventos', 'eventos:eliminar:eventos', 'eventos:ver:reporte_eventos',
   ],
   estudiante: ['solicitudes_reembolso:ver'],
   admin: null,

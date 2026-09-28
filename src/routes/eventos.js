@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const pool = require('../config/database');
@@ -354,7 +354,7 @@ router.get('/ver/:id', async (req, res) => {
   }
 });
 
-router.get('/:id/inscritos', permite('eventos', 'ver_inscritos'), async (req, res) => {
+router.get('/:id/inscritos', permite('eventos', 'ver:reporte_eventos'), async (req, res) => {
   try {
     const id = parseId(req.params.id);
     if (id === null) {
@@ -386,7 +386,7 @@ router.get('/:id/inscritos', permite('eventos', 'ver_inscritos'), async (req, re
 //
 // Se exige `editar` y no `ver_inscritos` porque es escritura. Ver la lista es
 // consultar; rellenar un dato de un alumno es tocar su registro.
-router.patch('/:id/inscritos/:inscripcionId', permite('eventos', 'editar'), async (req, res) => {
+router.patch('/:id/inscritos/:inscripcionId', permite('eventos', 'editar:eventos'), async (req, res) => {
   try {
     const id = parseId(req.params.id);
     if (id === null) {
@@ -437,7 +437,7 @@ router.patch('/:id/inscritos/:inscripcionId', permite('eventos', 'editar'), asyn
 // La imagen va en su propia ruta y no dentro del PUT: si llegara en el JSON
 // pasaria por el limite de 1mb de express.json y ademas obligaria a reenviar
 // todos los campos en cada cambio de foto.
-router.post('/:id/imagen', permite('eventos', 'editar'), upload.fields([
+router.post('/:id/imagen', permite('eventos', 'editar:eventos'), upload.fields([
   { name: 'imagen', maxCount: 1 },
   { name: 'imagen_thumb', maxCount: 1 },
 ]), async (req, res) => {
@@ -492,7 +492,7 @@ router.post('/:id/imagen', permite('eventos', 'editar'), upload.fields([
 
 // Sin esto "Quitar" en el formulario solo limpiaba la vista previa y el cartel
 // viejo seguia vivo para los alumnos.
-router.delete('/:id/imagen', permite('eventos', 'editar'), async (req, res) => {
+router.delete('/:id/imagen', permite('eventos', 'editar:eventos'), async (req, res) => {
   try {
     const id = parseId(req.params.id);
     if (id === null) {
@@ -513,7 +513,7 @@ router.delete('/:id/imagen', permite('eventos', 'editar'), async (req, res) => {
   }
 });
 
-router.post('/agregar', permite('eventos', 'crear'), async (req, res) => {
+router.post('/agregar', permite('eventos', 'crear:eventos'), async (req, res) => {
   try {
     const construido = construirEvento(req.body);
     if (construido.error) {
@@ -535,7 +535,7 @@ router.post('/agregar', permite('eventos', 'crear'), async (req, res) => {
   }
 });
 
-router.put('/editar/:id', permite('eventos', 'editar'), async (req, res) => {
+router.put('/editar/:id', permite('eventos', 'editar:eventos'), async (req, res) => {
   try {
     const id = parseId(req.params.id);
     if (id === null) {
@@ -723,7 +723,7 @@ router.delete('/:id/inscribirse', async (req, res) => {
   }
 });
 
-router.delete('/eliminar/:id', permite('eventos', 'eliminar'), async (req, res) => {
+router.delete('/eliminar/:id', permite('eventos', 'eliminar:eventos'), async (req, res) => {
   try {
     const id = parseId(req.params.id);
     if (id === null) {

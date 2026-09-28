@@ -124,6 +124,48 @@ CREATE TABLE IF NOT EXISTS permisos_usuario (
   UNIQUE (usuario_id, modulo, accion)
 );
 
+-- ---------------------------------------------------------------------------
+-- Migracion: Eventos pasa a subcategorias (eventos / reporte_eventos)
+-- ---------------------------------------------------------------------------
+-- Las claves viejas `eventos:ver_inscritos`, `eventos:crear`, `eventos:editar`,
+-- `eventos:eliminar` dejan de existir. El nuevo catálogo usa `eventos:ver:reporte_eventos`
+-- y `eventos:crear:eventos`, `eventos:editar:eventos`, `eventos:eliminar:eventos`.
+--
+-- Este bloque es IDEMPOTENTE: solo convierte filas que coincidan con los
+-- nombres antiguos y no toca nada que ya tenga la forma nueva.
+--
+-- 1) `ver_inscritos` → `ver:reporte_eventos`
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'eventos', 'ver:reporte_eventos'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'ver_inscritos'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+-- 2) `crear` → `crear:eventos`
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'eventos', 'crear:eventos'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'crear'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+-- 3) `editar` → `editar:eventos`
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'eventos', 'editar:eventos'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'editar'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+-- 4) `eliminar` → `eliminar:eventos`
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'eventos', 'eliminar:eventos'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'eliminar'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Fin de la migracion de Eventos
+-- ---------------------------------------------------------------------------
+
 CREATE UNIQUE INDEX IF NOT EXISTS alumnos_usuario_id_unique ON alumnos (usuario_id);
 
 -- Asistencia a clases de taekwondo.

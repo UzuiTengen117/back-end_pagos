@@ -707,20 +707,20 @@ test('las rutas alias de escritura ya no existen', async () => {
 
 // --- Correccion de los datos de una inscripcion ---
 
-test('corregir una inscripcion actualiza el snapshot y exige `editar`', async () => {
+test('corregir una inscripcion actualiza el snapshot y exige `editar:eventos`', async () => {
   await start();
 
-  // Con solo `ver_inscritos` se puede mirar la lista pero no escribir en ella.
-  install([PERMISOS_CON(['eventos:ver_inscritos']), { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [] }) }]);
+  // Con solo `ver:reporte_eventos` se puede mirar la lista pero no escribir en ella.
+  install([PERMISOS_CON(['eventos:ver:reporte_eventos']), { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [] }) }]);
   const sinPermiso = await request('PATCH', '/api/eventos/5/inscritos/9', {
     token: token('profesor'),
     body: DATOS_INSCRIPCION,
   });
-  assert.equal(sinPermiso.status, 403, 'ver_inscritos no debe alcanza para escribir');
+  assert.equal(sinPermiso.status, 403, 'ver:reporte_eventos no debe alcanza para escribir');
 
-  // Con `editar` si, y escribe los seis campos.
+  // Con `editar:eventos` si, y escribe los seis campos.
   const { calls } = install([
-    PERMISOS_CON(['eventos:ver_inscritos', 'eventos:editar']),
+    PERMISOS_CON(['eventos:ver:reporte_eventos', 'eventos:editar:eventos']),
     { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [{ id: 9 }] }) },
   ]);
   const res = await request('PATCH', '/api/eventos/5/inscritos/9', {
@@ -740,12 +740,12 @@ test('corregir una inscripcion actualiza el snapshot y exige `editar`', async ()
 });
 
 // La seguridad de esta ruta es el filtro de pertenencia. Sin el, un profesor
-// con `editar` podria pasar el id de una inscripcion de otro torneo y escribirle
+// con `editar:eventos` podria pasar el id de una inscripcion de otro torneo y escribirle
 // datos, y el id de una inscripcion es un entero correlativo y adivinable.
 test('corregir una inscripcion de OTRO evento responde 404 y no escribe', async () => {
   await start();
   const { calls } = install([
-    PERMISOS_CON(['eventos:editar']),
+    PERMISOS_CON(['eventos:editar:eventos']),
     // Cero filas: es lo que devuelve Postgres cuando el WHERE no casa.
     { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [] }) },
   ]);
@@ -780,7 +780,7 @@ test('corregir valida los datos igual que al inscribirse', async () => {
   ];
 
   for (const [body, esperado] of casos) {
-    install([PERMISOS_CON(['eventos:editar']), { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [{ id: 9 }] }) }]);
+    install([PERMISOS_CON(['eventos:editar:eventos']), { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [{ id: 9 }] }) }]);
     const res = await request('PATCH', '/api/eventos/5/inscritos/9', { token: token('profesor'), body });
     assert.equal(res.status, 400, `deberia rechazar ${JSON.stringify(body)}`);
     assert.match(res.data.message, new RegExp(esperado, 'i'));
