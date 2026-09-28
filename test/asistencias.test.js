@@ -32,6 +32,12 @@ const SESION_ABIERTA = {
   abierta: true,
 };
 
+// Clase por sede: el grado es "Todos", asi que entra cualquier alumno de esa
+// sede sin importar el grupo.
+const SESION_TODOS = { ...SESION_ABIERTA, grado: 'Todos' };
+
+const ALUMNO_OTRO_GRADO = { ...ALUMNO_EN_GRADO, grado: 'Cinta roja principiante' };
+
 test('GET /api/asistencias/mi-qr: estudiante recibe token y sus datos', async () => {
   await start();
   install([
@@ -67,24 +73,27 @@ test('GET /api/asistencias/mis-asistencias: el scope filtra por el usuario del a
   assert.deepEqual(call.params, [7]);
 });
 
-test('POST /api/asistencias/abrir-sesion: crea la sesion del grado y sede', async () => {
+test('POST /api/asistencias/abrir-sesion: crea la sesion de la sede, sin grupo', async () => {
   await start();
   const { calls } = install([
     PERMISOS_VACIO,
     { match: 'abierta = TRUE', result: () => ({ rows: [] }) },
-    { match: 'INSERT INTO asistencia_sesiones', result: () => ({ rows: [SESION_ABIERTA] }) },
+    { match: 'INSERT INTO asistencia_sesiones', result: () => ({ rows: [SESION_TODOS] }) },
   ]);
   const res = await request('POST', '/api/asistencias/abrir-sesion', {
     token: token('profesor', 1),
-    body: { grado: '1er', sede: 'Progreso' },
+    body: { sede: 'Progreso' },
   });
   assert.equal(res.status, 201);
-  assert.equal(res.data.grado, '1er');
+  assert.equal(res.data.grado, 'Todos');
   const insert = calls.find((c) => c.text.includes('INSERT INTO asistencia_sesiones'));
-  assert.deepEqual(insert.params, ['1er', 'Progreso', 1]);
+  assert.deepEqual(insert.params, ['Todos', 'Progreso', 1]);
+  // El grupo ya no se elige: si el cliente lo manda, se ignora en vez de
+  // crear una clase por grupo que el listado no encontraria.
+  assert.ok(!calls.some((c) => c.text.includes('LOWER(grado)')));
 });
 
-test('POST /api/asistencias/abrir-sesion: reutiliza la sesion ya abierta', async () => {
+test('POST /api/asistencias/abrir-sesion: reutiliza la sesion ya abierta de la sede', async () => {
   await start();
   const { calls } = install([
     PERMISOS_VACIO,
@@ -92,7 +101,7 @@ test('POST /api/asistencias/abrir-sesion: reutiliza la sesion ya abierta', async
   ]);
   const res = await request('POST', '/api/asistencias/abrir-sesion', {
     token: token('profesor', 1),
-    body: { grado: '1er', sede: 'Progreso' },
+    body: { sede: 'Progreso' },
   });
   assert.equal(res.status, 200);
   assert.equal(res.data.id, 1);
@@ -104,7 +113,7 @@ test('POST /api/asistencias/abrir-sesion: sede invalida → 400', async () => {
   install([PERMISOS_VACIO]);
   const res = await request('POST', '/api/asistencias/abrir-sesion', {
     token: token('profesor', 1),
-    body: { grado: '1er', sede: 'Cancun' },
+    body: { sede: 'Cancun' },
   });
   assert.equal(res.status, 400);
 });
@@ -177,6 +186,36 @@ test('POST /api/asistencias/registrar: alumno de otro grado → 400', async () =
   });
   assert.equal(res.status, 400);
   assert.match(res.data.message, /5to/);
+});
+
+test('POST /api/asistencias/registrar: clase por sede acepta a cualquiera de esa sede', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: 'FROM asistencia_sesiones WHERE id = $1 AND profesor_id = $2', result: () => ({ rows: [SESION_TODOS] }) },
+    { match: 'FROM alumnos WHERE id = $1', result: () => ({ rows: [ALUMNO_OTRO_GRADO] }) },
+    { match: 'INSERT INTO asistencias', result: () => ({ rows: [{ id: 1, metodo: 'qr' }] }) },
+  ]);
+  const res = await request('POST', '/api/asistencias/registrar', {
+    token: token('profesor', 1),
+    body: { token: emitirTokenQr(7), sesion_id: 1 },
+  });
+  assert.equal(res.status, 201);
+});
+
+test('POST /api/asistencias/registrar: clase por sede sigue rechazando otra sede → 400', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: 'FROM asistencia_sesiones WHERE id = $1 AND profesor_id = $2', result: () => ({ rows: [SESION_TODOS] }) },
+    { match: 'FROM alumnos WHERE id = $1', result: () => ({ rows: [{ ...ALUMNO_OTRO_GRADO, sede: 'Morelos' }] }) },
+  ]);
+  const res = await request('POST', '/api/asistencias/registrar', {
+    token: token('profesor', 1),
+    body: { token: emitirTokenQr(7), sesion_id: 1 },
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.data.message, /Morelos/);
 });
 
 test('POST /api/asistencias/registrar: sesion de otro profesor → 404', async () => {
@@ -254,7 +293,25 @@ test('POST /api/asistencias/registrar: sin permiso de registrar → 403', async 
   assert.equal(res.status, 403);
 });
 
-test('GET /api/asistencias/sesion/:id/alumnos: lista los alumnos del grado con su estado', async () => {
+test('GET /api/asistencias/sesion/:id/alumnos: clase por sede lista a todos los de la sede', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'SELECT * FROM asistencia_sesiones WHERE id = $1', result: () => ({ rows: [SESION_TODOS] }) },
+    { match: 'LEFT JOIN asistencias asis', result: () => ({ rows: [{ ...ALUMNO_EN_GRADO, asistencia_id: null }] }) },
+  ]);
+  const res = await request('GET', '/api/asistencias/sesion/1/alumnos', { token: token('profesor', 1) });
+  assert.equal(res.status, 200);
+  const call = calls.find((c) => c.text.includes('LEFT JOIN asistencias asis'));
+  // Sin filtro de grupo: solo la sede. Y el placeholder $3 no debe quedar en
+  // la consulta, porque sin parametro que lo rellene Postgres la rechaza.
+  assert.match(call.text, /WHERE a\.sede = \$2/);
+  assert.ok(!call.text.includes('LOWER(a.grado)'), 'la clase por sede no debe filtrar por grado');
+  assert.ok(!call.text.includes('$3'), 'no debe quedar un placeholder sin usar');
+  assert.deepEqual(call.params, ['1', 'Progreso']);
+});
+
+test('GET /api/asistencias/sesion/:id/alumnos: clase heredada de un grupo sí acota por grado', async () => {
   await start();
   const { calls } = install([
     PERMISOS_VACIO,
@@ -264,8 +321,9 @@ test('GET /api/asistencias/sesion/:id/alumnos: lista los alumnos del grado con s
   const res = await request('GET', '/api/asistencias/sesion/1/alumnos', { token: token('profesor', 1) });
   assert.equal(res.status, 200);
   const call = calls.find((c) => c.text.includes('LEFT JOIN asistencias asis'));
+  assert.match(call.text, /LOWER\(a\.grado\) = LOWER\(\$3\)/);
   // req.params llega como string; el grado y la sede vienen de la sesion.
-  assert.deepEqual(call.params, ['1', '1er', 'Progreso']);
+  assert.deepEqual(call.params, ['1', 'Progreso', '1er']);
 });
 
 test('GET /api/asistencias/sesion/:id/alumnos: sesion inexistente → 404', async () => {

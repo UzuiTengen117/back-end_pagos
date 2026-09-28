@@ -9,6 +9,26 @@ const { emitirTokenQr, verificarTokenQr } = require('../utils/qrToken');
 
 const SEDES = ['Progreso', 'Morelos'];
 
+// La clase se define por sede, no por grupo: el profesor abre la sede y
+// registra a quien llegue, sea del grado que sea. La columna grado se conserva
+// con este valor en vez de dejarla NULL para no romper el indice unico parcial
+// (en Postgres los NULL no se consideran duplicados entre si, asi que el indice
+// dejaria de proteger) ni los reportes ya hechos. Si el grado guardado es
+// distinto a GRADO_TODOS, la sesion se trata como clase de un solo grupo, que es
+// lo que hai en las clases abiertas antes de este cambio.
+const GRADO_TODOS = 'Todos';
+
+function norm(s) { return (s || '').trim().toLowerCase(); }
+
+// Compara por color base: "Cinta Roja avanzada" coincide con "Cinta Roja",
+// "cinta negra 1er dan" con "Cinta Negra 1er Dan", etc. Permite que existan
+// variaciones en la BD sin bloquear el escaneo.
+function colorBase(s) {
+  const str = norm(s);
+  const match = str.match(/cinta\s+(blanca|amarilla|naranja|verde|azul|roja|negra)/);
+  return match ? match[1] : str;
+}
+
 // El alumno pide el token de su QR. Se renueva solo desde el frontend,
 // por eso la vigencia es corta y vive en qrToken.js.
 router.get('/mi-qr', async (req, res) => {
@@ -69,22 +89,23 @@ router.get('/mis-asistencias', async (req, res) => {
   }
 });
 
-// El profesor abre la clase del dia. Reutiliza la sesion abierta del mismo
-// grado y sede en vez de crear otra, para no fragmentar el registro.
+// El profesor abre la clase del dia. Se elige la sede: el grupo lo determinan
+// los alumnos que llegan, no el select. Reutiliza la sesion abierta de la misma
+// sede en vez de crear otra, para no fragmentar el registro.
 router.post('/abrir-sesion', permite('asistencias', 'registrar:tomar_asistencia'), async (req, res) => {
   try {
-    const { grado, sede } = req.body;
-    if (!grado) {
-      return res.status(400).json({ message: 'El grado es requerido' });
-    }
+    const { sede } = req.body;
     if (!SEDES.includes(sede)) {
       return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
     }
 
+    // El filtro es solo por sede, no por grado: asi una sesion heredada de un
+    // grupo especifico tambien se reutiliza en vez de quedar abierta en
+    // paralelo y partir el registro de la sede en dos.
     const abierta = await pool.query(
       `SELECT * FROM asistencia_sesiones
-       WHERE profesor_id = $1 AND LOWER(grado) = LOWER($2) AND sede = $3 AND abierta = TRUE`,
-      [req.user.id, grado, sede]
+       WHERE profesor_id = $1 AND sede = $2 AND abierta = TRUE`,
+      [req.user.id, sede]
     );
     if (abierta.rows.length > 0) {
       return res.json(abierta.rows[0]);
@@ -94,7 +115,7 @@ router.post('/abrir-sesion', permite('asistencias', 'registrar:tomar_asistencia'
       `INSERT INTO asistencia_sesiones (grado, sede, profesor_id)
        VALUES ($1, $2, $3)
        RETURNING *`,
-      [grado, sede, req.user.id]
+      [GRADO_TODOS, sede, req.user.id]
     );
     res.status(201).json(creada.rows[0]);
   } catch (error) {
@@ -186,8 +207,10 @@ router.delete('/sesiones/:id', authorize('admin'), async (req, res) => {
   }
 });
 
-// Alumnos esperados en la sesion (mismo grado y sede) con su estado de
-// asistencia. El profesor ve tambien a quien no ha llegado todavia.
+// Alumnos esperados en la sesion con su estado de asistencia. El profesor ve
+// tambien a quien no ha llegado todavia. Como la clase es por sede, entra
+// todo alumno de esa sede; el filtro por grado solo se aplica a las clases
+// heredadas que si se crearon por grupo.
 router.get('/sesion/:id/alumnos', permite('asistencias', 'ver:tomar_asistencia'), async (req, res) => {
   try {
     const { id } = req.params;
@@ -199,6 +222,7 @@ router.get('/sesion/:id/alumnos', permite('asistencias', 'ver:tomar_asistencia')
       return res.status(404).json({ message: 'Sesion no encontrada' });
     }
     const { grado, sede } = sesion.rows[0];
+    const soloSede = String(grado).toLowerCase() === GRADO_TODOS.toLowerCase();
 
     const result = await pool.query(
       `SELECT a.id, a.nombre, a.primer_apellido, a.segundo_apellido, a.grado, a.sede,
@@ -206,9 +230,10 @@ router.get('/sesion/:id/alumnos', permite('asistencias', 'ver:tomar_asistencia')
        FROM alumnos a
        JOIN usuarios u ON a.usuario_id = u.id
        LEFT JOIN asistencias asis ON asis.alumno_id = a.id AND asis.sesion_id = $1
-       WHERE LOWER(a.grado) = LOWER($2) AND a.sede = $3
+       WHERE a.sede = $2
+         ${soloSede ? '' : 'AND LOWER(a.grado) = LOWER($3)'}
        ORDER BY a.primer_apellido ASC, a.nombre ASC`,
-      [id, grado, sede]
+      soloSede ? [id, sede] : [id, sede, grado]
     );
     res.json(result.rows);
   } catch (error) {
@@ -262,19 +287,13 @@ router.post('/registrar', permite('asistencias', 'registrar:tomar_asistencia'), 
     if (alumno.rows.length === 0) {
       return res.status(404).json({ message: 'Alumno no encontrado' });
     }
-const a = alumno.rows[0];
-    // Comparacion flexible por color base: "Cinta roja avanzada" coincide con "Cinta Roja",
-    // "cinta negra 1er dan" con "Cinta Negra 1er Dan", etc.
-    // Esto permite que existan variaciones en la BD (avanzado, primer dan, etc.)
-    // sin bloquear el escaneo.
-    function norm(s) { return (s || '').trim().toLowerCase(); }
-    function colorBase(s) {
-      const str = norm(s);
-      // Extrae la primera palabra de color conocida despues de "cinta "
-      const match = str.match(/cinta\s+(blanca|amarilla|naranja|verde|azul|roja|negra)/);
-      return match ? match[1] : str;
-    }
-    if (colorBase(a.grado) !== colorBase(grado) || norm(a.sede) !== norm(sede)) {
+    const a = alumno.rows[0];
+    // La sede siempre se respeta. El grado solo se compara en las clases
+    // heredadas, que si eran de un grupo: en una clase por sede entra cualquier
+    // alumno de esa sede. Ahi "Cinta Roja avanzada" y "Cinta Roja" se tratan
+    // como el mismo grupo, que es lo que permitia el colorBase.
+    const soloSede = String(grado).toLowerCase() === GRADO_TODOS.toLowerCase();
+    if (norm(a.sede) !== norm(sede) || (!soloSede && colorBase(a.grado) !== colorBase(grado))) {
       return res.status(400).json({
         message: `El alumno es de ${a.grado} / ${a.sede} y esta clase es de ${grado} / ${sede}`,
       });
