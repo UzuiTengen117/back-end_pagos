@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS alumnos (
   email VARCHAR(255) UNIQUE NOT NULL,
   telefono VARCHAR(20),
   grado VARCHAR(50) NOT NULL,
+  -- La sede donde esta matriculado el alumno. Misma lista cerrada que
+  -- eventos.sede, asi que las dos salen de src/config/sedes.js.
+  sede VARCHAR(50) NOT NULL CHECK (sede IN ('Progreso', 'Morelos')),
   beca_id INTEGER REFERENCES becas(id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -171,9 +174,9 @@ ALTER TABLE asistencias
   ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC';
 
 -- Torneos y dual meets de taekwondo.
--- `sede` NO lleva CHECK como el resto de las tablas: un torneo puede celebrarse
--- fuera de la academia (en otro gimnasio o en otra ciudad), asi que aqui es
--- texto libre y el frontend sugiere las dos sedes propias.
+-- Un torneo se juega en las sedes de la academia, asi que la lista es cerrada y
+-- el CHECK la hace cumplir en la base, no solo en el formulario. Texto libre
+-- permitiria eventos en lugares que el resto del sistema no conoce.
 CREATE TABLE IF NOT EXISTS eventos (
   id SERIAL PRIMARY KEY,
   nombre VARCHAR(255) NOT NULL,
@@ -182,13 +185,28 @@ CREATE TABLE IF NOT EXISTS eventos (
   -- torneo es unico, no una fecha de calendario. El reloj regresivo del alumno
   -- se calcula contra este valor.
   fecha_inicio TIMESTAMPTZ NOT NULL,
-  sede VARCHAR(50),
+  -- Un torneo puede jugarse en una o en las dos sedes. Se guarda como texto
+  -- separado por comas ("Progreso", "Morelos", "Progreso, Morelos") en vez de
+  -- como tabla aparte: nadie consulta eventos por una sede concreta, solo las
+  -- muestra, y una tabla hija obligaria a un JOIN en el listado.
+  --
+  -- El CHECK valida la lista completa con una expresion regular y no con
+  -- `sede IN (...)`, que ya no alcanza: un `IN` compara la cadena entera y
+  -- dejaria pasar "Progreso, Cholula" sin quejarse. `^...$` exige que sean
+  -- sedes conocidas separadas por comas, sin nada antes ni despues.
+  -- Ninguna de las dos sedes tiene metacaracteres de regex, asi que no hay que
+  -- escaparlas; si se agrega una con un parentesis o un punto, hay que hacerlo.
+  -- CHECK si admite `~` porque es una expresion: lo que no admite son subqueries.
+  sede VARCHAR(50) CHECK (
+    sede IS NULL
+    OR btrim(sede) = ''
+    OR btrim(sede) ~ '^(Progreso|Morelos)(, ?(Progreso|Morelos))*$'
+  ),
   lugar VARCHAR(255),
   categorias VARCHAR(255),
   descripcion TEXT,
   precio_inscripcion NUMERIC(10, 2) NOT NULL DEFAULT 0,
   cupo_maximo INTEGER,
-  link_registro VARCHAR(500),
   -- Data URL (igual que usuarios.foto) porque el despliegue es serverless y no
   -- hay disco donde dejar el archivo. Limite de 2MB aplicado por multer.
   imagen TEXT,
@@ -216,6 +234,16 @@ CREATE TABLE IF NOT EXISTS eventos_inscripciones (
   alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
   usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
   estado VARCHAR(20) NOT NULL DEFAULT 'inscrito' CHECK (estado IN ('inscrito', 'cancelada')),
+  -- Datos que captura el alumno al inscribirse. Es una COPIA congelada de ese
+  -- momento, no una vista de `alumnos`: la escuela o el grado pueden cambiar
+  -- despues del torneo y la lista impresa debe decir lo que habia al inscribed.
+  -- `edad` y `escuela` no existen en alumnos, asi que viven solo aqui.
+  nombre VARCHAR(255) NOT NULL,
+  primer_apellido VARCHAR(255) NOT NULL,
+  segundo_apellido VARCHAR(255),
+  edad SMALLINT,
+  grado VARCHAR(50) NOT NULL,
+  escuela VARCHAR(150) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -224,3 +252,139 @@ CREATE UNIQUE INDEX IF NOT EXISTS eventos_inscripciones_unica
   ON eventos_inscripciones (evento_id, alumno_id);
 
 CREATE INDEX IF NOT EXISTS eventos_inscripciones_alumno_idx ON eventos_inscripciones (alumno_id);
+
+-- ---------------------------------------------------------------------------
+-- Migracion: alumnos.sede
+-- ---------------------------------------------------------------------------
+-- database.sql venia sin esta columna aunque el codigo la usa desde hace tiempo
+-- (el INSERT de alumnos la lista y el alta la exige). En una base ya montada la
+-- columna existe y esto no hace nada; en una base creada con este mismo archivo
+-- sigue siendo la definicion de arriba. El NOT NULL y el CHECK se agregan
+-- aparte porque no se pueden poner en un ADD COLUMN sobre una tabla con filas.
+
+ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS sede VARCHAR(50);
+
+-- Solo si ya habia alumnos: sin sede no se puede cumplir el NOT NULL y el
+-- comando se aborta. Cada fila se va a 'Progreso', que es la sede por defecto de
+-- la academia, y el entrenador la corrige en el registro del alumno.
+UPDATE alumnos SET sede = 'Progreso' WHERE sede IS NULL;
+
+ALTER TABLE alumnos ALTER COLUMN sede SET DEFAULT 'Progreso';
+ALTER TABLE alumnos ALTER COLUMN sede SET NOT NULL;
+ALTER TABLE alumnos DROP CONSTRAINT IF EXISTS alumnos_sede_check;
+ALTER TABLE alumnos ADD CONSTRAINT alumnos_sede_valida CHECK (sede IN ('Progreso', 'Morelos'));
+
+-- ---------------------------------------------------------------------------
+-- Permisos de eventos para usuarios con configuracion explicita
+-- ---------------------------------------------------------------------------
+-- ESTA MIGRACION NO ESTA ACTIVA A PROPOSITO. Leela antes de descomentarla.
+--
+-- El reparto de permisos tiene dos caminos: si el usuario NO tiene filas en
+-- `permisos_usuario`, se le aplican los DEFAULTS de su rol desde el backend
+-- (permisos.js), y un admin recibe todos. Pero si tiene AL MENOS UNA fila, sus
+-- defaults dejan de contar y solo ve esas filas.
+--
+-- Ese es el problema: cuando se agrego el modulo Eventos, ningun usuario con
+-- configuracion explicita recibio `eventos:*`, asi que el menu de Eventos y el
+-- Reporte de Inscripciones les salen invisibles aunque su rol sea admin o
+-- profesor. No es un bug de codigo, es el modelo de permisos funcionando.
+--
+-- Primero el diagnostico (este si se puede correr, no cambia nada):
+
+SELECT u.id, u.nombre, u.rol,
+       COUNT(p.id) FILTER (WHERE p.modulo = 'eventos') AS permisos_eventos,
+       COUNT(p.id)                                        AS permisos_totales
+  FROM usuarios u
+  JOIN permisos_usuario p ON p.usuario_id = u.id
+ WHERE u.rol IN ('admin', 'profesor')
+ GROUP BY u.id, u.nombre, u.rol
+HAVING COUNT(p.id) FILTER (WHERE p.modulo = 'eventos') = 0
+ ORDER BY u.rol, u.nombre;
+
+-- Si la consulta devuelve a alguien, ese usuario no vera nada de Eventos.
+--
+-- Para arreglarlo descomenta SOLO el bloque de abajo. Se eligió a mano y no
+-- viene en la migracion automatica por dos razones:
+--
+-- 1. `eventos:eliminar` borra el evento Y sus inscripciones. Repartirlo en
+--    automatico a quien el administrador decidio dejar sin permisos es una
+--    escalada de privilegios, no una correccion.
+-- 2. `eventos:ver_inscritos` expone nombre, edad y escuela de cada alumno. Es
+--    dato personal de menores, y decide quien lo ve la academia, no el script.
+--
+-- Empieza solo por `ver_inscritos`, que es el que habilita el reporte, y agrega
+-- crear/editar/eliminar solo a quien de verdad organiza torneos.
+--
+-- INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+-- SELECT u.id, 'eventos', 'ver_inscritos'
+--   FROM usuarios u
+--  WHERE u.rol IN ('admin', 'profesor')
+--    AND EXISTS (SELECT 1 FROM permisos_usuario p WHERE p.usuario_id = u.id)
+--    AND NOT EXISTS (
+--      SELECT 1 FROM permisos_usuario p
+--       WHERE p.usuario_id = u.id AND p.modulo = 'eventos'
+--    )
+-- ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Migracion: sede cerrada, sin link de registro y datos del alumno
+-- ---------------------------------------------------------------------------
+-- Todo lo de arriba es IF NOT EXISTS, asi que correr el script dos veces es
+-- seguro. Esta seccion cubre el caso inverso: que las tablas ya existieran de
+-- una version anterior del modulo. Tambien es idempotente.
+--
+-- Verificar antes de ejecutar:
+--   SELECT * FROM information_schema.columns
+--    WHERE table_name IN ('eventos','eventos_inscripciones') AND column_name = 'imagen_thumb';
+
+-- El link de registro se elimino: la inscripcion se hace dentro del sistema.
+ALTER TABLE eventos DROP COLUMN IF EXISTS link_registro;
+
+-- La sede ahora admite las dos a la vez ("Progreso, Morelos"), asi que el CHECK
+-- anterior (sede IN ('Progreso','Morelos')) ya no basta:(IN) compara la
+-- cadena completa y rechazaria el par. Se sueltan los dos nombres por los que
+-- se los creo (implicito y explicito) antes de poner el nuevo.
+--
+-- Las filas existentes NO hay que tocarlas: "Progreso" y "Morelos" sueltos ya
+-- cumplen el patron nuevo. Solo se normaliza el espacio por si alguien guardo
+-- "Progreso , Morelos" a mano.
+ALTER TABLE eventos DROP CONSTRAINT IF EXISTS eventos_sede_check;
+ALTER TABLE eventos DROP CONSTRAINT IF EXISTS eventos_sede_valida;
+ALTER TABLE eventos
+  ADD CONSTRAINT eventos_sede_valida CHECK (
+    sede IS NULL
+    OR btrim(sede) = ''
+    OR btrim(sede) ~ '^(Progreso|Morelos)(, ?(Progreso|Morelos))*$'
+  );
+
+-- Ordena las sedes en el canonico (Progreso primero) por si una fila quedo con
+-- el orden al reves, que el backend ya normaliza en las altas nuevas.
+UPDATE eventos SET sede = 'Progreso, Morelos' WHERE btrim(sede) = 'Morelos, Progreso';
+UPDATE eventos SET sede = 'Progreso, Morelos' WHERE btrim(sede) = 'Morelos,Progreso';
+
+-- Datos que captura el alumno al inscribirse.
+ALTER TABLE eventos_inscripciones ADD COLUMN IF NOT EXISTS nombre VARCHAR(255);
+ALTER TABLE eventos_inscripciones ADD COLUMN IF NOT EXISTS primer_apellido VARCHAR(255);
+ALTER TABLE eventos_inscripciones ADD COLUMN IF NOT EXISTS segundo_apellido VARCHAR(255);
+ALTER TABLE eventos_inscripciones ADD COLUMN IF NOT EXISTS edad SMALLINT;
+ALTER TABLE eventos_inscripciones ADD COLUMN IF NOT EXISTS grado VARCHAR(50);
+ALTER TABLE eventos_inscripciones ADD COLUMN IF NOT EXISTS escuela VARCHAR(150);
+
+-- Respaldo desde el perfil por si quedaran filas de una version previa. En una
+-- base nueva no hay filas y esto no hace nada. 'Sin especificar' es un valor
+-- visible y busquable a proposito: un escuela inventada seria peor que un hueco
+-- que el entrenador tiene que rellenar antes de imprimir.
+UPDATE eventos_inscripciones ei SET
+  nombre         = COALESCE(ei.nombre, a.nombre),
+  primer_apellido = COALESCE(ei.primer_apellido, a.primer_apellido),
+  segundo_apellido = COALESCE(ei.segundo_apellido, a.segundo_apellido),
+  grado          = COALESCE(ei.grado, a.grado),
+  escuela         = COALESCE(ei.escuela, 'Sin especificar')
+  FROM alumnos a
+ WHERE a.id = ei.alumno_id
+   AND (ei.nombre IS NULL OR ei.primer_apellido IS NULL OR ei.grado IS NULL OR ei.escuela IS NULL);
+
+ALTER TABLE eventos_inscripciones ALTER COLUMN nombre SET NOT NULL;
+ALTER TABLE eventos_inscripciones ALTER COLUMN primer_apellido SET NOT NULL;
+ALTER TABLE eventos_inscripciones ALTER COLUMN grado SET NOT NULL;
+ALTER TABLE eventos_inscripciones ALTER COLUMN escuela SET NOT NULL;

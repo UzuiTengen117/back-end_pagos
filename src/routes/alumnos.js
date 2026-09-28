@@ -5,6 +5,31 @@ const { authorize } = require('../middleware/auth');
 const { permite } = require('../middleware/permisos');
 const { alumnoScope } = require('../middleware/scope');
 const { internalError } = require('../utils/httpError');
+const { SEDES } = require('../config/sedes');
+
+// El alumno lee su propio registro para precargar el formulario de inscripción
+// a un torneo (nombre, apellidos, grado). No lleva `authorize` ni `permite` a
+// proposito: el alcance ya lo fija el WHERE, porque el usuario_id sale del JWT
+// y no de un parametro. Un admin o profesor que lo pidan reciben 404, que es lo
+// correcto: no tienen ficha de alumno.
+//
+// Se declara antes de `/:id` para que la ruta estatica gane.
+router.get('/mi-perfil', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT a.id, a.nombre, a.primer_apellido, a.segundo_apellido, a.grado
+         FROM alumnos a
+        WHERE a.usuario_id = $1`,
+      [req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'No se encontró tu registro de alumno' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    internalError(res, error);
+  }
+});
 
 router.get('/disponibles', authorize('admin', 'profesor'), async (req, res) => {
   try {
@@ -115,8 +140,8 @@ router.post('/agregar', permite('alumnos', 'crear'), async (req, res) => {
       return res.status(400).json({ message: 'Nombre, primer apellido, usuario_id, email y grado son requeridos' });
     }
 
-    if (!['Progreso', 'Morelos'].includes(sede)) {
-      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
+    if (!SEDES.includes(sede)) {
+      return res.status(400).json({ message: `La sede debe ser ${SEDES.join(' o ')}` });
     }
 
     const userCheck = await pool.query('SELECT id FROM usuarios WHERE id = $1', [usuario_id]);
@@ -157,8 +182,8 @@ router.post('/', permite('alumnos', 'crear'), async (req, res) => {
       return res.status(400).json({ message: 'Nombre, primer apellido, usuario_id, email y grado son requeridos' });
     }
 
-    if (!['Progreso', 'Morelos'].includes(sede)) {
-      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
+    if (!SEDES.includes(sede)) {
+      return res.status(400).json({ message: `La sede debe ser ${SEDES.join(' o ')}` });
     }
 
     const userCheck = await pool.query('SELECT id FROM usuarios WHERE id = $1', [usuario_id]);
@@ -196,8 +221,8 @@ router.put('/editar/:id', permite('alumnos', 'editar'), async (req, res) => {
     const { id } = req.params;
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede } = req.body;
 
-    if (!['Progreso', 'Morelos'].includes(sede)) {
-      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
+    if (!SEDES.includes(sede)) {
+      return res.status(400).json({ message: `La sede debe ser ${SEDES.join(' o ')}` });
     }
 
     if (beca_id) {
@@ -233,8 +258,8 @@ router.put('/:id', permite('alumnos', 'editar'), async (req, res) => {
     const { id } = req.params;
     const { nombre, primer_apellido, segundo_apellido, usuario_id, email, telefono, grado, beca_id, sede } = req.body;
 
-    if (!['Progreso', 'Morelos'].includes(sede)) {
-      return res.status(400).json({ message: 'La sede debe ser Progreso o Morelos' });
+    if (!SEDES.includes(sede)) {
+      return res.status(400).json({ message: `La sede debe ser ${SEDES.join(' o ')}` });
     }
 
     if (beca_id) {

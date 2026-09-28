@@ -15,13 +15,22 @@ const THUMB_MAX_BYTES = 200 * 1024;
 
 // Limites espejo de las columnas en database.sql. Sin esto un nombre largo
 // rebota como 22001 y el usuario ve un 500 en vez de un mensaje de campo.
+// Los torneos se juegan en las sedes de la academia. Lista cerrada en el
+// backend, no solo en el <select> del formulario: un POST con "Gimnasio de
+// Cholula" debe rebotar con un 400 explicito y no con un 23514 de CHECK.
+const { SEDES } = require('../config/sedes');
+
 const MAX_NOMBRE = 255;
-const MAX_SEDE = 50;
 const MAX_LUGAR = 255;
-const MAX_CATEGORIAS = 255;
-const MAX_LINK = 500;
+const MAX_ESCUELA = 150;
+const MAX_GRADO = 50;
 // NUMERIC(10,2) admite 8 digitos enteros. Pasarse es 22003, tambien un 500.
 const MAX_PRECIO = 99999999.99;
+// Un alumno de taekwondo de elite ronda los 12-18. El rango es ancho a
+// proposito (un torneo abierto admite master) pero corta los 999 de un dedo
+// mal puesto o un payload automatizado.
+const EDAD_MIN = 4;
+const EDAD_MAX = 99;
 
 // Mismo limite que la foto de perfil. El despliegue es serverless y no hay
 // disco: la imagen viaja como data URL dentro de la fila.
@@ -38,7 +47,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 *
 // problema de tamano justo en las filas que no se han vuelto a subir.
 const SELECT_EVENTOS = `
   SELECT e.id, e.nombre, e.tipo, e.fecha_inicio, e.sede, e.lugar, e.categorias,
-         e.descripcion, e.precio_inscripcion, e.cupo_maximo, e.link_registro,
+         e.descripcion, e.precio_inscripcion, e.cupo_maximo,
          e.imagen_thumb AS imagen,
          e.estado, e.created_at, e.updated_at,
          (SELECT COUNT(*) FROM eventos_inscripciones ei
@@ -62,14 +71,18 @@ const SELECT_EVENTO = `
     FROM eventos e
 `;
 
+// La lista de inscritos se arma desde el SNAPSHOT de la inscripcion, no desde
+// `alumnos`. Es lo que garantiza: si el alumno actualiza su escuela en su
+// perfil despues de haberse inscrito, la lista del torneo sigue diciendo lo que
+// mando al inscribirse. Un JOIN a alumnos daria el dato actual, que no es el que
+// se imprimio en la mesa de inscripcion.
 const SELECT_INSCRITOS = `
-  SELECT ei.id, ei.estado, ei.created_at,
-         a.id AS alumno_id, a.nombre, a.primer_apellido, a.segundo_apellido,
-         a.grado, a.sede
+  SELECT ei.id, ei.alumno_id, ei.estado, ei.created_at,
+         ei.nombre, ei.primer_apellido, ei.segundo_apellido,
+         ei.edad, ei.grado, ei.escuela
     FROM eventos_inscripciones ei
-    JOIN alumnos a ON a.id = ei.alumno_id
    WHERE ei.evento_id = $1 AND ei.estado = 'inscrito'
-   ORDER BY a.primer_apellido ASC, a.nombre ASC
+   ORDER BY ei.primer_apellido ASC, ei.nombre ASC
 `;
 
 // Un id de ruta no numerico (letras, signo, decimal) llega hoy a Postgres y
@@ -160,14 +173,23 @@ function construirEvento(body) {
     precio = Math.round(precio * 100) / 100;
   }
 
-  const sede = texto(body.sede, MAX_SEDE, 'La sede');
+  // Sede opcional: hay eventos de alcance general que no se fijan a una sede
+  // concreta. Si viene, es una lista separada por comas, porque un torneo puede
+  // celebrarse en Progreso y Morelos el mismo dia. Cada parte se valida por
+  // separado contra SEDES: validar la cadena entera solo comprobaria que
+  // "Progreso, Cholula" fuera distinta de "Progreso", asi que pasaria.
+  //
+  // Se deduplica y se une en el orden de SEDES, no en el que llegó el cliente,
+  // para que "Morelos, Progreso" y "Progreso, Morelos" guarden lo mismo y la
+  // comparacion en el buscador y en el filtro no los trate como eventos
+  // distintos.
+  const sede = construirSedes(body.sede);
   if (sede.error) return { error: sede.error };
+
   const lugar = texto(body.lugar, MAX_LUGAR, 'El lugar');
   if (lugar.error) return { error: lugar.error };
-  const categorias = texto(body.categorias, MAX_CATEGORIAS, 'Las categorías');
+  const categorias = construirCintas(body.categorias);
   if (categorias.error) return { error: categorias.error };
-  const link = texto(body.link_registro, MAX_LINK, 'El link de registro');
-  if (link.error) return { error: link.error };
 
   return {
     values: {
@@ -181,7 +203,116 @@ function construirEvento(body) {
       descripcion: (body.descripcion || '').trim() || null,
       precio_inscripcion: precio,
       cupo_maximo: cupo,
-      link_registro: link.valor,
+    },
+  };
+}
+
+// Convierte la lista de sedes del cuerpo en el texto que se guarda, o devuelve
+// un error. Devuelve `null` cuando no se eligio ninguna: vacio es valido.
+function construirSedes(entrada) {
+  if (entrada === null || entrada === undefined || String(entrada).trim() === '') {
+    return { valor: null };
+  }
+
+  const pedidas = String(entrada)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (pedidas.length === 0) {
+    return { valor: null };
+  }
+  if (pedidas.length > SEDES.length) {
+    return { error: `Solo puedes marcar hasta ${SEDES.length} sedes` };
+  }
+
+  const invalidas = pedidas.filter((s) => !SEDES.includes(s));
+  if (invalidas.length > 0) {
+    return { error: `Sede no válida: ${invalidas.join(', ')}. Permitidas: ${SEDES.join(', ')}` };
+  }
+
+  // Orden canonico segun SEDES, no segun el orden de llegada.
+  return { valor: SEDES.filter((s) => pedidas.includes(s)).join(', ') };
+}
+
+// Las cintas (categorias) NO son lista cerrada: el torneo puede arbitrar una
+// categoria que la academia aun no teaches, y bloquearla dejaria al entrenador
+// sin poder registrar el evento. Solo se normaliza el texto y se recorta el
+// largo. El placeholder de la columna obliga a 255, pero se acota aqui para que
+// "Blanca, Amarilla, ..." no crezca sin limite.
+const MAX_CINTAS = 200;
+
+function construirCintas(entrada) {
+  if (entrada === null || entrada === undefined) {
+    return { valor: null };
+  }
+
+  const partes = String(entrada)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (partes.length === 0) {
+    return { valor: null };
+  }
+
+  // Se unifica por minusculas para no dejar "Blanca, blanca" como dos categorias.
+  const vistas = new Set();
+  const unicas = partes.filter((c) => {
+    const clave = c.toLowerCase();
+    if (vistas.has(clave)) return false;
+    vistas.add(clave);
+    return true;
+  });
+
+  const unido = unicas.join(', ');
+  if (unido.length > MAX_CINTAS) {
+    return { error: `La lista de categorías es demasiado larga (máximo ${MAX_CINTAS} caracteres)` };
+  }
+  return { valor: unido };
+}
+
+// Datos que el alumno captura al inscribirse. Validar aqui y no solo en el
+// formulario: el endpoint es publico para cualquier sesion de estudiante, y un
+// cuerpo vacio colaria una fila en blanco que despues sale impresa en la lista
+// de asistencia del torneo.
+function construirDatosInscripcion(body) {
+  const nombre = (body.nombre || '').trim();
+  const primerApellido = (body.primer_apellido || '').trim();
+  const grado = (body.grado || '').trim();
+  const escuela = (body.escuela || '').trim();
+
+  if (!nombre) return { error: 'Escribe tu nombre' };
+  if (nombre.length > MAX_NOMBRE) return { error: 'El nombre es demasiado largo' };
+  if (!primerApellido) return { error: 'Escribe tu apellido paterno' };
+  if (primerApellido.length > MAX_NOMBRE) return { error: 'El apellido paterno es demasiado largo' };
+  if (!grado) return { error: 'Escribe tu grado' };
+  if (grado.length > MAX_GRADO) return { error: `El grado no puede superar ${MAX_GRADO} caracteres` };
+  if (!escuela) return { error: 'Escribe el nombre de tu escuela' };
+  if (escuela.length > MAX_ESCUELA) return { error: 'El nombre de la escuela es demasiado largo' };
+
+  const segundoApellido = (body.segundo_apellido || '').trim();
+  if (segundoApellido.length > MAX_NOMBRE) return { error: 'El apellido materno es demasiado largo' };
+
+  // Edad es la unica opcional: no todos los grados la traen a mano, y es
+  // preferible un hueco visible a inventar un numero que nadie verifico.
+  let edad = null;
+  const edadCruda = body.edad;
+  if (edadCruda !== null && edadCruda !== undefined && edadCruda !== '') {
+    edad = Number(edadCruda);
+    if (!Number.isInteger(edad) || edad < EDAD_MIN || edad > EDAD_MAX) {
+      return { error: `Ingresa una edad válida (entre ${EDAD_MIN} y ${EDAD_MAX})` };
+    }
+  }
+
+  return {
+    valores: {
+      nombre,
+      primer_apellido: primerApellido,
+      segundo_apellido: segundoApellido || null,
+      edad,
+      grado,
+      escuela,
     },
   };
 }
@@ -237,6 +368,67 @@ router.get('/:id/inscritos', permite('eventos', 'ver_inscritos'), async (req, re
 
     const result = await pool.query(SELECT_INSCRITOS, [id]);
     res.json(result.rows);
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
+// Corregir los datos de una inscripcion.
+//
+// El snapshot es congelado a proposito: si el alumno actualiza su escuela DESPUES
+// de inscribirse, la lista impresa de ESE torneo debe seguir diciendo lo que
+// mando. Pero eso deja un hueco real: una inscripcion creada antes de que
+// existieran estos campos queda con edad y escuela en NULL, y el entrenador
+// tiene una lista para imprimir con dos rayas y ninguna forma de llenarlas.
+//
+// Esta ruta es el remedio. Es de correccion, no de rediseño: escribe sobre el
+// snapshot de ESA inscripcion y no toca el perfil del alumno.
+//
+// Se exige `editar` y no `ver_inscritos` porque es escritura. Ver la lista es
+// consultar; rellenar un dato de un alumno es tocar su registro.
+router.patch('/:id/inscritos/:inscripcionId', permite('eventos', 'editar'), async (req, res) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ message: 'Evento no encontrado' });
+    }
+    const inscripcionId = parseId(req.params.inscripcionId);
+    if (inscripcionId === null) {
+      return res.status(400).json({ message: 'Inscripción inválida' });
+    }
+
+    // Misma validacion que al inscribirse, a proposito: si el formulario de
+    // correccion aceptara algo que el de alta rechaza, se podrian meter datos
+    // que el alta prohibe.
+    const d = construirDatosInscripcion(req.body);
+    if (d.error) {
+      return res.status(400).json({ message: d.error });
+    }
+
+    // El `evento_id = $1` NO es redundante con el id de la ruta: sin el, un
+    // profesor con `editar` podria pasar el id de una inscripcion de CUALQUIER
+    // torneo (o de otra academia si el id se adivina) y escribirle datos. El
+    // filtro de pertenencia es lo que cierra eso.
+    //
+    // No se toca `created_at` a proposito: es la fecha en que se confirmo la
+    // inscripcion y la lista impresa la usa. Y no se marca `updated_at` porque
+    // esa columna no existe en la tabla y meterla obligaria a correr una
+    // migracion para poder corregir un dato.
+    const result = await pool.query(
+      `UPDATE eventos_inscripciones
+          SET nombre = $3, primer_apellido = $4, segundo_apellido = $5,
+              edad = $6, grado = $7, escuela = $8
+        WHERE id = $1 AND evento_id = $2
+        RETURNING *`,
+      [inscripcionId, id, d.valores.nombre, d.valores.primer_apellido,
+       d.valores.segundo_apellido, d.valores.edad, d.valores.grado, d.valores.escuela]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'La inscripción no pertenece a este evento' });
+    }
+
+    res.json(result.rows[0]);
   } catch (error) {
     internalError(res, error);
   }
@@ -331,11 +523,11 @@ router.post('/agregar', permite('eventos', 'crear'), async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO eventos (nombre, tipo, estado, fecha_inicio, sede, lugar, categorias,
-                            descripcion, precio_inscripcion, cupo_maximo, link_registro, creado_por)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                            descripcion, precio_inscripcion, cupo_maximo, creado_por)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [v.nombre, v.tipo, v.estado, v.fecha_inicio, v.sede, v.lugar, v.categorias,
-       v.descripcion, v.precio_inscripcion, v.cupo_maximo, v.link_registro, req.user.id]
+       v.descripcion, v.precio_inscripcion, v.cupo_maximo, req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -362,11 +554,11 @@ router.put('/editar/:id', permite('eventos', 'editar'), async (req, res) => {
       `UPDATE eventos SET
          nombre = $1, tipo = $2, estado = $3, fecha_inicio = $4, sede = $5, lugar = $6,
          categorias = $7, descripcion = $8, precio_inscripcion = $9, cupo_maximo = $10,
-         link_registro = $11, updated_at = NOW()
-       WHERE id = $12
+         updated_at = NOW()
+       WHERE id = $11
        RETURNING *`,
       [v.nombre, v.tipo, v.estado, v.fecha_inicio, v.sede, v.lugar, v.categorias,
-       v.descripcion, v.precio_inscripcion, v.cupo_maximo, v.link_registro, id]
+       v.descripcion, v.precio_inscripcion, v.cupo_maximo, id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Evento no encontrado' });
@@ -387,6 +579,13 @@ router.post('/:id/inscribirse', async (req, res) => {
     const alumnoId = await obtenerAlumno(req.user.id);
     if (alumnoId === null) {
       return res.status(404).json({ message: 'No se encontró tu registro de alumno' });
+    }
+
+    // Se valida antes de abrir la transaccion: un formulario incompleto no
+    // merece un BEGIN, y el mensaje de error llega sin round-trip a la base.
+    const datos = construirDatosInscripcion(req.body);
+    if (datos.error) {
+      return res.status(400).json({ message: datos.error });
     }
 
     // Todo el alta ocurre en una transaccion con FOR UPDATE sobre la fila del
@@ -446,21 +645,34 @@ router.post('/:id/inscribirse', async (req, res) => {
         }
       }
 
+      // Los datos se piden SIEMPRE, incluso si la fila ya existe: al
+      // reactivarse una inscripcion cancelada, el alumno puede querer
+      // corregir su escuela o su grado, y el snapshot debe reflejar lo que
+      // mando en esta occasion.
+      const d = datos.valores;
+
       let guardada;
       if (existente.rows.length > 0) {
         // Reinscribirse tras cancelar reactiva la fila. Un segundo INSERT
         // chocaria con el indice unico.
         const reactivada = await client.query(
-          `UPDATE eventos_inscripciones SET estado = 'inscrito', created_at = NOW()
-            WHERE id = $1 RETURNING *`,
-          [existente.rows[0].id]
+          `UPDATE eventos_inscripciones SET
+             estado = 'inscrito', created_at = NOW(),
+             nombre = $2, primer_apellido = $3, segundo_apellido = $4,
+             edad = $5, grado = $6, escuela = $7
+           WHERE id = $1 RETURNING *`,
+          [existente.rows[0].id, d.nombre, d.primer_apellido, d.segundo_apellido,
+           d.edad, d.grado, d.escuela]
         );
         guardada = reactivada.rows[0];
       } else {
         const creada = await client.query(
-          `INSERT INTO eventos_inscripciones (evento_id, alumno_id, usuario_id)
-           VALUES ($1, $2, $3) RETURNING *`,
-          [id, alumnoId, req.user.id]
+          `INSERT INTO eventos_inscripciones
+             (evento_id, alumno_id, usuario_id,
+              nombre, primer_apellido, segundo_apellido, edad, grado, escuela)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+          [id, alumnoId, req.user.id,
+           d.nombre, d.primer_apellido, d.segundo_apellido, d.edad, d.grado, d.escuela]
         );
         guardada = creada.rows[0];
       }

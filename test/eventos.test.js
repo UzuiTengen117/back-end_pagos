@@ -49,7 +49,6 @@ const EVENTO_VALIDO = {
   descripcion: 'Categorias infantil y juvenil',
   precio_inscripcion: 250,
   cupo_maximo: 60,
-  link_registro: 'https://ejemplo.com/registro',
   estado: 'programado',
 };
 
@@ -76,6 +75,17 @@ function handlersInscripcion(extra = []) {
     { match: 'INSERT INTO eventos_inscripciones', result: () => ({ rows: [{ id: 1, alumno_id: 22 }] }) },
   ];
 }
+
+// Datos que el alumno escribe en el modal antes de inscribirse. El backend los
+// exige: nombre, paterno, grado y escuela son obligatorios, la edad opcional.
+const DATOS_INSCRIPCION = {
+  nombre: 'Juan Carlos',
+  primer_apellido: 'García',
+  segundo_apellido: 'Hernández',
+  edad: 12,
+  grado: '4to',
+  escuela: 'Escuela Primaria Federal',
+};
 
 // --- Validacion de alta ---
 
@@ -292,12 +302,18 @@ test('el alumno se inscribe en un evento programado → 201', async () => {
   await start();
   const { calls } = install(handlersInscripcion());
 
-  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante', 3) });
+  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante', 3), body: DATOS_INSCRIPCION });
   assert.equal(res.status, 201);
 
   const insert = calls.find((c) => c.text.includes('INSERT INTO eventos_inscripciones'));
   // parseId normaliza el id de ruta a entero, asi que ya no llega como texto.
-  assert.deepEqual(insert.params, [5, 22, 3], 'el alumno_id se resuelve del token, no del body');
+  // Los tres primeros son evento, alumno resuelto del token y usuario; los
+  // otros seis son el snapshot que el alumno escribio en el modal.
+  assert.deepEqual(
+    insert.params,
+    [5, 22, 3, 'Juan Carlos', 'García', 'Hernández', 12, '4to', 'Escuela Primaria Federal'],
+    'el alumno_id se resuelve del token y los datos van en su propio orden'
+  );
   assert.ok(calls.some((c) => c.text.includes('FOR UPDATE')), 'el cupo se bloquea con FOR UPDATE');
 });
 
@@ -307,30 +323,35 @@ test('el alumno no puede forjar el alumno_id desde el body', async () => {
 
   await request('POST', '/api/eventos/5/inscribirse', {
     token: token('estudiante', 3),
-    body: { alumno_id: 999 },
+    // Los datos validos mas un alumno_id inventado. La validacion del cuerpo no
+    // debe filtrarse por el campo sobrante.
+    body: { ...DATOS_INSCRIPCION, alumno_id: 999, usuario_id: 77 },
   });
 
   const insert = calls.find((c) => c.text.includes('INSERT INTO eventos_inscripciones'));
+  assert.ok(insert, 'debe haberse insertado');
   assert.ok(!insert.params.includes(999), 'el alumno_id del body debe ignorarse');
+  assert.ok(!insert.params.includes(77), 'el usuario_id del body debe ignorarse');
   assert.equal(insert.params[1], 22, 'debe usarse el alumno ligado al token');
+  assert.equal(insert.params[2], 3, 'debe usarse el usuario del token');
 });
 
 test('cancelado, finalizado o ya ocurrido → 400 sin tocar la inscripcion', async () => {
   await start();
 
   install(handlersInscripcion([{ match: 'FROM eventos WHERE id = $1 FOR UPDATE', result: () => ({ rows: [{ id: 5, estado: 'cancelado', cupo_maximo: null }] }) }]));
-  const cancelado = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const cancelado = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(cancelado.status, 400);
   assert.match(cancelado.data.message, /cancelado/i);
 
   install(handlersInscripcion([{ match: 'FROM eventos WHERE id = $1 FOR UPDATE', result: () => ({ rows: [{ id: 5, estado: 'finalizado', cupo_maximo: null }] }) }]));
-  const finalizado = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const finalizado = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(finalizado.status, 400);
   assert.match(finalizado.data.message, /ya se lleva a cabo/i);
 
   // La fecha no se miraba antes: un curl a un evento del mes pasado devolvia 201.
   install(handlersInscripcion([{ match: 'FROM eventos WHERE id = $1 FOR UPDATE', result: () => ({ rows: [{ id: 5, estado: 'programado', fecha_inicio: '2020-01-01T00:00:00.000Z', cupo_maximo: null }] }) }]));
-  const pasado = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const pasado = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(pasado.status, 400);
   assert.match(pasado.data.message, /ya se llevó a cabo/i);
 });
@@ -339,7 +360,7 @@ test('inscribirse sin registro de alumno → 404', async () => {
   await start();
   install([{ match: 'FROM alumnos WHERE usuario_id = $1', result: () => ({ rows: [] }) }]);
 
-  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(res.status, 404);
   assert.match(res.data.message, /registro de alumno/i);
 });
@@ -351,7 +372,7 @@ test('cupo lleno → 400 antes de intentar el INSERT', async () => {
     { match: 'SELECT COUNT(*) AS total', result: () => ({ rows: [{ total: '1' }] }) },
   ]));
 
-  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(res.status, 400);
   assert.match(res.data.message, /lugares disponibles/i);
   assert.ok(!calls.some((c) => c.text.includes('INSERT INTO eventos_inscripciones')), 'no debe insertar si el cupo esta lleno');
@@ -366,7 +387,7 @@ test('quien ya esta inscrito recibe 200, no el error de cupo lleno', async () =>
     { match: 'SELECT COUNT(*) AS total', result: () => ({ rows: [{ total: '1' }] }) },
   ]));
 
-  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(res.status, 200);
   assert.ok(!calls.some((c) => c.text.includes('SELECT COUNT(*)')), 'no debe contar el cupo si ya tiene lugar');
   assert.ok(!calls.some((c) => c.text.includes('INSERT INTO eventos_inscripciones')), 'no debe duplicar la fila');
@@ -378,7 +399,7 @@ test('doble inscripcion simultanea (23505) → 400 con mensaje entendible', asyn
   err.code = '23505';
   install(handlersInscripcion([{ match: 'INSERT INTO eventos_inscripciones', result: () => { throw err; } }]));
 
-  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(res.status, 400);
   assert.match(res.data.message, /ya est/i);
 });
@@ -387,10 +408,14 @@ test('reinscribirse tras cancelar reactiva la fila en vez de duplicar', async ()
   await start();
   const { calls } = install(handlersInscripcion([
     { match: 'SELECT id, estado FROM eventos_inscripciones', result: () => ({ rows: [{ id: 9, estado: 'cancelada' }] }) },
-    { match: "SET estado = 'inscrito', created_at = NOW()", result: () => ({ rows: [{ id: 9 }] }) },
+    // El match va sobre `UPDATE eventos_inscripciones SET` y no sobre
+    // `estado = 'inscrito'`: el mockPool compara subcadenas, y el COUNT del cupo
+    // tambien termina en `AND estado = 'inscrito'`, asi que un match laxo se
+    // tragaria esa consulta y devolveria filas de la reactivacion para el conteo.
+    { match: 'UPDATE eventos_inscripciones SET', result: () => ({ rows: [{ id: 9 }] }) },
   ]));
 
-  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante') });
+  const res = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: DATOS_INSCRIPCION });
   assert.equal(res.status, 200);
   assert.equal(res.data.id, 9);
   assert.ok(!calls.some((c) => c.text.includes('INSERT INTO eventos_inscripciones')), 'no debe crear una segunda fila');
@@ -414,6 +439,137 @@ test('cancelar inscripcion → mensaje; sin inscripcion activa → 404', async (
   assert.equal(nada.status, 404);
 });
 
+// --- Datos del alumno al inscribirse ---
+
+// El endpoint acepta un cuerpo vacio desde cualquier sesion de estudiante, y lo
+// que valida mal acaba impreso en la lista de asistencia del torneo: una fila
+// sin nombre ni escuela no se nota en la base, se nota el dia del evento.
+test('inscribirse sin datos → 400 y sin tocar la base', async () => {
+  await start();
+  const { calls } = install(handlersInscripcion());
+
+  const vacio = await request('POST', '/api/eventos/5/inscribirse', { token: token('estudiante'), body: {} });
+  assert.equal(vacio.status, 400);
+  assert.match(vacio.data.message, /nombre/i);
+  assert.ok(!calls.some((c) => c.text.includes('INSERT INTO eventos_inscripciones')), 'no debe insertar');
+
+  for (const campo of ['primer_apellido', 'grado', 'escuela']) {
+    install(handlersInscripcion());
+    const res = await request('POST', '/api/eventos/5/inscribirse', {
+      token: token('estudiante'),
+      body: { ...DATOS_INSCRIPCION, [campo]: '   ' },
+    });
+    assert.equal(res.status, 400, `sin ${campo} debe rebotar`);
+  }
+});
+
+test('edad fuera de rango o no entera → 400; vacia o valida → pasa', async () => {
+  await start();
+
+  for (const edad of [3, 100, 12.5, 'doce', -1]) {
+    install(handlersInscripcion());
+    const res = await request('POST', '/api/eventos/5/inscribirse', {
+      token: token('estudiante'),
+      body: { ...DATOS_INSCRIPCION, edad },
+    });
+    assert.equal(res.status, 400, `edad ${JSON.stringify(edad)} debe rebotar`);
+    assert.match(res.data.message, /edad/i);
+  }
+
+  // La edad es la unica opcional: un alumno que no la tiene a mano deja el
+  // hueco en vez de que el backend le invente un numero.
+  for (const edad of [null, undefined, '']) {
+    install(handlersInscripcion());
+    const res = await request('POST', '/api/eventos/5/inscribirse', {
+      token: token('estudiante'),
+      body: { ...DATOS_INSCRIPCION, edad },
+    });
+    assert.equal(res.status, 201, `edad ${JSON.stringify(edad)} deberia aceptarse como vacia`);
+  }
+});
+
+test('los datos del snapshot se guardan en el INSERT y al reactivar', async () => {
+  await start();
+  const { calls } = install(handlersInscripcion([
+    { match: 'SELECT id, estado FROM eventos_inscripciones', result: () => ({ rows: [{ id: 9, estado: 'cancelada' }] }) },
+    // El match va sobre `UPDATE eventos_inscripciones SET` y no sobre
+    // `estado = 'inscrito'`: el mockPool compara subcadenas, y el COUNT del cupo
+    // tambien termina en `AND estado = 'inscrito'`, asi que un match laxo se
+    // tragaria esa consulta y devolveria filas de la reactivacion para el conteo.
+    { match: 'UPDATE eventos_inscripciones SET', result: () => ({ rows: [{ id: 9 }] }) },
+  ]));
+
+  const res = await request('POST', '/api/eventos/5/inscribirse', {
+    token: token('estudiante'),
+    body: { ...DATOS_INSCRIPCION, escuela: 'Otra Escuela' },
+  });
+  assert.equal(res.status, 200);
+
+  const update = calls.find((c) => c.text.includes('UPDATE eventos_inscripciones SET'));
+  assert.ok(update, 'debe reactivar la fila existente');
+  assert.ok(update.text.includes('escuela = $7'), 'la reactivacion tambien actualiza el snapshot');
+  assert.ok(update.params.includes('Otra Escuela'), 'la escuela corregida debe quedar guardada');
+  assertPlaceholders(update);
+});
+
+// --- Sede ---
+
+// La sede es una lista cerrada de las dos sedes de la academia, validada en el
+// backend y no solo en el <select>: sin esto un POST crudo metería una sede que
+// nadie mas conoce. Se pueden marcar las dos (torneo en ambas sedes a la vez),
+// asi que se valida cada parte del par, no la cadena entera.
+test('sede acepta las dos juntas, normaliza el orden y rechaza lo ajena', async () => {
+  await start();
+
+  const alta = (sede) => {
+    install([PERMISOS_VACIO, { match: 'INSERT INTO eventos', result: () => ({ rows: [{ id: 1 }] }) }]);
+    return request('POST', '/api/eventos/agregar', { token: token('admin'), body: { ...EVENTO_VALIDO, sede } });
+  };
+
+  // Cualquiera de las dos, o las dos, pasa; vacio tambien (evento sin sede fija).
+  for (const sede of ['Progreso', 'Morelos', 'Progreso, Morelos', '']) {
+    const res = await alta(sede);
+    assert.equal(res.status, 201, `la sede ${JSON.stringify(sede)} deberia aceptarse`);
+  }
+
+  // "Progreso, Cholula" NO debe pasar: validar la cadena entera comparandola a
+  // "Progreso" daria falso (no son iguales) y la dejaria entrar.
+  const ajena = await alta('Progreso, Cholula');
+  assert.equal(ajena.status, 400);
+  assert.match(ajena.data.message, /cholula/i);
+
+  const tres = await alta('Progreso, Morelos, Progreso');
+  assert.equal(tres.status, 400, 'no se pueden marcar mas de dos');
+
+  // Orden canonico: "Morelos , Progreso" se guarda como "Progreso, Morelos", para
+  // que el buscador y los filtros no traten dos ordenes como eventos distintos.
+  const { calls } = install([PERMISOS_VACIO, { match: 'INSERT INTO eventos', result: () => ({ rows: [{ id: 1 }] }) }]);
+  const res = await request('POST', '/api/eventos/agregar', {
+    token: token('admin'),
+    body: { ...EVENTO_VALIDO, sede: 'Morelos , Progreso' },
+  });
+  assert.equal(res.status, 201);
+  const insert = calls.find((c) => c.text.includes('INSERT INTO eventos'));
+  assert.equal(insert.params[4], 'Progreso, Morelos', 'la sede se guarda en el orden canonico');
+});
+
+// Las categorias son lista ABIERTA: el arbitro de un torneo abierto puede
+// arbitrar una cinta que la academia aun no teachings, y bloquearla dejaria al
+// entrenador sin poder registrar el evento. Se normalizan (sin duplicados ni
+// espacios sueltos), no se restringen.
+test('categorias: normaliza, deduplica y acepta cualquier cinta', async () => {
+  await start();
+  const { calls } = install([PERMISOS_VACIO, { match: 'INSERT INTO eventos', result: () => ({ rows: [{ id: 1 }] }) }]);
+
+  const res = await request('POST', '/api/eventos/agregar', {
+    token: token('admin'),
+    body: { ...EVENTO_VALIDO, categorias: ' Blanca ,  Verde ,blanca , Azul ' },
+  });
+  assert.equal(res.status, 201);
+  const insert = calls.find((c) => c.text.includes('INSERT INTO eventos'));
+  assert.equal(insert.params[6], 'Blanca, Verde, Azul', 'espacios y duplicados fuera, orden de llegada');
+});
+
 // --- Inscritos ---
 
 // La tarjeta contaba solo activos y el modal listaba todos: 3 cancelados
@@ -423,13 +579,13 @@ test('ver inscritos solo trae los activos y exige el permiso', async () => {
   const { calls } = install([
     PERMISOS_VACIO,
     { match: 'SELECT id FROM eventos WHERE id = $1', result: () => ({ rows: [{ id: 5 }] }) },
-    { match: 'JOIN alumnos a ON a.id = ei.alumno_id', result: () => ({ rows: [] }) },
+    { match: 'FROM eventos_inscripciones ei', result: () => ({ rows: [] }) },
   ]);
 
   const res = await request('GET', '/api/eventos/5/inscritos', { token: token('profesor') });
   assert.equal(res.status, 200, 'el profesor lo tiene por default');
 
-  const query = calls.find((c) => c.text.includes('JOIN alumnos a ON a.id = ei.alumno_id'));
+  const query = calls.find((c) => c.text.includes('FROM eventos_inscripciones ei'));
   assert.ok(query.text.includes("ei.estado = 'inscrito'"), 'debe filtrar los cancelados');
   assertPlaceholders(query);
 
@@ -547,4 +703,86 @@ test('las rutas alias de escritura ya no existen', async () => {
   install([PERMISOS_VACIO]);
   const post = await request('POST', '/api/eventos', { token: token('admin'), body: EVENTO_VALIDO });
   assert.equal(post.status, 404, 'POST / no debe existir');
+});
+
+// --- Correccion de los datos de una inscripcion ---
+
+test('corregir una inscripcion actualiza el snapshot y exige `editar`', async () => {
+  await start();
+
+  // Con solo `ver_inscritos` se puede mirar la lista pero no escribir en ella.
+  install([PERMISOS_CON(['eventos:ver_inscritos']), { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [] }) }]);
+  const sinPermiso = await request('PATCH', '/api/eventos/5/inscritos/9', {
+    token: token('profesor'),
+    body: DATOS_INSCRIPCION,
+  });
+  assert.equal(sinPermiso.status, 403, 'ver_inscritos no debe alcanza para escribir');
+
+  // Con `editar` si, y escribe los seis campos.
+  const { calls } = install([
+    PERMISOS_CON(['eventos:ver_inscritos', 'eventos:editar']),
+    { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [{ id: 9 }] }) },
+  ]);
+  const res = await request('PATCH', '/api/eventos/5/inscritos/9', {
+    token: token('profesor'),
+    body: { ...DATOS_INSCRIPCION, edad: 12, escuela: 'Escuela Central' },
+  });
+  assert.equal(res.status, 200);
+
+  const update = calls.find((c) => c.text.includes('UPDATE eventos_inscripciones'));
+  assertPlaceholders(update);
+  assert.match(update.text, /evento_id = \$2/, 'el UPDATE debe filtrar por evento, no solo por id de inscripcion');
+  assert.match(update.text, /edad = \$6/);
+  assert.match(update.text, /escuela = \$8/);
+  assert.equal(update.params[1], 5, 'el evento de la ruta viaja como parametro');
+  assert.equal(update.params[2], DATOS_INSCRIPCION.nombre);
+  assert.equal(update.params[7], 'Escuela Central');
+});
+
+// La seguridad de esta ruta es el filtro de pertenencia. Sin el, un profesor
+// con `editar` podria pasar el id de una inscripcion de otro torneo y escribirle
+// datos, y el id de una inscripcion es un entero correlativo y adivinable.
+test('corregir una inscripcion de OTRO evento responde 404 y no escribe', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_CON(['eventos:editar']),
+    // Cero filas: es lo que devuelve Postgres cuando el WHERE no casa.
+    { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [] }) },
+  ]);
+
+  const res = await request('PATCH', '/api/eventos/5/inscritos/999', {
+    token: token('profesor'),
+    body: DATOS_INSCRIPCION,
+  });
+  assert.equal(res.status, 404);
+  assert.match(res.data.message, /no pertenece/i);
+
+  // El UPDATE si se ejecuto (con un id que no existe); lo que se evita es que
+  // devuelva exito. Si el dia de manana se agrega un SELECT de pertenencia
+  // previo, esta asercion avisa que el UPDATE paso a no tocarse.
+  const update = calls.find((c) => c.text.includes('UPDATE eventos_inscripciones'));
+  assert.ok(update, 'el UPDATE debe llevar el filtro de pertenencia, no omitirse');
+  assertPlaceholders(update);
+});
+
+// La validacion es la misma que al inscribirse: si el editor aceptara algo que
+// el alta rechaza, se podrian meter datos que el alta prohibe.
+test('corregir valida los datos igual que al inscribirse', async () => {
+  await start();
+
+  const casos = [
+    [{ ...DATOS_INSCRIPCION, nombre: '   ' }, 'nombre'],
+    [{ ...DATOS_INSCRIPCION, grado: '' }, 'grado'],
+    [{ ...DATOS_INSCRIPCION, escuela: '' }, 'escuela'],
+    [{ ...DATOS_INSCRIPCION, edad: 3 }, 'edad'],
+    [{ ...DATOS_INSCRIPCION, edad: 150 }, 'edad'],
+    [{ ...DATOS_INSCRIPCION, edad: 'doce' }, 'edad'],
+  ];
+
+  for (const [body, esperado] of casos) {
+    install([PERMISOS_CON(['eventos:editar']), { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [{ id: 9 }] }) }]);
+    const res = await request('PATCH', '/api/eventos/5/inscritos/9', { token: token('profesor'), body });
+    assert.equal(res.status, 400, `deberia rechazar ${JSON.stringify(body)}`);
+    assert.match(res.data.message, new RegExp(esperado, 'i'));
+  }
 });
