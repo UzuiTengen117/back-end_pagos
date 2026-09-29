@@ -296,6 +296,110 @@ CREATE UNIQUE INDEX IF NOT EXISTS eventos_inscripciones_unica
 CREATE INDEX IF NOT EXISTS eventos_inscripciones_alumno_idx ON eventos_inscripciones (alumno_id);
 
 -- ---------------------------------------------------------------------------
+-- EXAMENES
+-- ---------------------------------------------------------------------------
+-- Tabla propia, no un tipo mas de `eventos`. Se pidio separadas y la razon
+-- tecnica es que el modelo NO calza: un evento se ordena por fecha y juega en
+-- sede, un examen se ordena por `nivel` (cinta) y ocurre en una sola sede. Meter
+-- `nivel` en eventos obligaria a un CHECK de tipos mas largo y a un
+-- `tipo = 'examen'` mezclado con torneos en cada listado y cada filtro.
+--
+-- El resto de la forma (imagen en data URL, thumbnail, precio, cupo, estados) se
+-- copia de eventos a proposito: son las mismas decisiones de despliegue
+-- serverless, y divergir aqui solo daria dosimplementaciones que divergen.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS examenes (
+  id SERIAL PRIMARY KEY,
+  nombre VARCHAR(255) NOT NULL,
+  -- Cintas o grados que se examinan, separados por comas ("Blanca, Amarilla").
+  -- Es el equivalente funcional de `eventos.tipo` y va como texto libre, no como
+  -- CHECK: los grados se agregan cada temporada y meterlos en el esquema obliga a
+  -- una migracion cada vez que la academia abre un nivel nuevo.
+  niveles VARCHAR(255),
+  -- TIMESTAMPTZ por la misma razon que en eventos: el examen ocurre en un
+  -- instante, no en un dia. El reloj regresivo del alumno se calcula contra
+  -- este valor.
+  fecha_examen TIMESTAMPTZ NOT NULL,
+  -- Mismo CHECK que en eventos: solo las dos sedes, separadas por comas, validado
+  -- con regex porque `IN` compara la cadena entera.
+  sede VARCHAR(50) CHECK (
+    sede IS NULL
+    OR btrim(sede) = ''
+    OR btrim(sede) ~ '^(Progreso|Morelos)(, ?(Progreso|Morelos))*$'
+  ),
+  lugar VARCHAR(255),
+  descripcion TEXT,
+  precio_inscripcion NUMERIC(10, 2) NOT NULL DEFAULT 0,
+  cupo_maximo INTEGER,
+  -- Data URL por la misma razon que en eventos: el despliegue es serverless y
+  -- no hay disco. Limite de 2MB aplicado por multer.
+  imagen TEXT,
+  -- Version reducida que genera el navegador antes de subir. El listado NUNCA
+  -- pide `imagen`: a 2MB el base64 son 2.67MB por examen y dos carteles ya
+  -- reventan el limite de 4.5MB de respuesta de Vercel.
+  imagen_thumb TEXT,
+  estado VARCHAR(30) NOT NULL DEFAULT 'programado'
+    CHECK (estado IN ('programado', 'en_curso', 'finalizado', 'cancelado')),
+  creado_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS examenes_fecha_examen_idx ON examenes (fecha_examen);
+
+-- Inscripcion del alumno a un examen. Guarda usuario_id ademas de alumno_id
+-- porque es lo que identifica al actor en el JWT.
+CREATE TABLE IF NOT EXISTS examenes_inscripciones (
+  id SERIAL PRIMARY KEY,
+  examen_id INTEGER NOT NULL REFERENCES examenes(id) ON DELETE CASCADE,
+  alumno_id INTEGER NOT NULL REFERENCES alumnos(id) ON DELETE CASCADE,
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  estado VARCHAR(20) NOT NULL DEFAULT 'inscrito' CHECK (estado IN ('inscrito', 'cancelada')),
+  -- Snapshot congelado de la identidad, igual que en eventos_inscripciones: la
+  -- hoja de resultados de UN examen debe decir lo que mando el alumno ese dia,
+  -- aunque despues actualice su escuela o su grado.
+  nombre VARCHAR(255) NOT NULL,
+  primer_apellido VARCHAR(255) NOT NULL,
+  segundo_apellido VARCHAR(255),
+  edad SMALLINT,
+  grado VARCHAR(50) NOT NULL,
+  escuela VARCHAR(150) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS examenes_inscripciones_unica
+  ON examenes_inscripciones (examen_id, alumno_id);
+
+CREATE INDEX IF NOT EXISTS examenes_inscripciones_alumno_idx ON examenes_inscripciones (alumno_id);
+
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'examenes', 'crear:examenes'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'crear:eventos'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'examenes', 'editar:examenes'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'editar:eventos'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'examenes', 'eliminar:examenes'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'eliminar:eventos'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+INSERT INTO permisos_usuario (usuario_id, modulo, accion)
+SELECT usuario_id, 'examenes', 'ver:reporte_examenes'
+  FROM permisos_usuario
+ WHERE modulo = 'eventos' AND accion = 'ver:reporte_eventos'
+ ON CONFLICT (usuario_id, modulo, accion) DO NOTHING;
+
+
+
+-- ---------------------------------------------------------------------------
 -- Migracion: alumnos.sede
 -- ---------------------------------------------------------------------------
 -- database.sql venia sin esta columna aunque el codigo la usa desde hace tiempo

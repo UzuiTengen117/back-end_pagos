@@ -85,6 +85,22 @@ const MODULOS_ACCIONES = {
       },
     },
   },
+  examenes: {
+    label: 'Examenes',
+    // Misma division que eventos: gestionar la convocatoria y consultar la hoja
+    // de resultados son decisiones distintas. Se separan para que un profesor
+    // que solo pasa lista en los exams no reciba el poder de borrarlos.
+    subcategorias: {
+      examenes: {
+        label: 'Examenes',
+        acciones: { crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+      },
+      reporte_examenes: {
+        label: 'Reporte de Examenes',
+        acciones: { ver: 'Ver' },
+      },
+    },
+  },
   asistencias: {
     label: 'Asistencias',
     subcategorias: {
@@ -116,6 +132,7 @@ const DEFAULTS = {
     'becas:crear', 'becas:editar', 'becas:eliminar',
     'asistencias:registrar:tomar_asistencia', 'asistencias:ver:tomar_asistencia', 'asistencias:reportar:reporte_asistencias', 'asistencias:ver:reporte_asistencias', 'asistencias:eliminar:reporte_asistencias',
     'eventos:crear:eventos', 'eventos:editar:eventos', 'eventos:eliminar:eventos', 'eventos:ver:reporte_eventos',
+    'examenes:crear:examenes', 'examenes:editar:examenes', 'examenes:eliminar:examenes', 'examenes:ver:reporte_examenes',
   ],
   estudiante: ['solicitudes_reembolso:ver'],
   admin: null,

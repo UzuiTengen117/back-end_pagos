@@ -1,4 +1,4 @@
-const { test, after } = require('node:test');
+﻿const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const jwt = require('jsonwebtoken');
 
@@ -17,7 +17,7 @@ function targetRol(rol) {
   return { match: 'SELECT rol FROM usuarios WHERE id = $1', result: () => ({ rows: [{ rol }] }) };
 }
 
-test('GET /api/permisos/modulos expone exactamente las 10 categorías', async () => {
+test('GET /api/permisos/modulos expone exactamente las 11 categorías', async () => {
   await start();
   install();
   const res = await request('GET', '/api/permisos/modulos', { token: token('admin') });
@@ -25,16 +25,24 @@ test('GET /api/permisos/modulos expone exactamente las 10 categorías', async ()
 
   const esperados = [
     'pagos', 'inscripciones', 'comprobantes', 'alumnos',
-    'usuarios', 'solicitudes_reembolso', 'precios', 'becas', 'asistencias', 'eventos',
+    'usuarios', 'solicitudes_reembolso', 'precios', 'becas', 'asistencias', 'eventos', 'examenes',
   ];
   for (const mod of esperados) {
     assert.ok(res.data[mod], `debe existir el módulo ${mod}`);
   }
-  assert.equal(Object.keys(res.data).length, 10, 'deben ser exactamente 10 categorías');
+  assert.equal(Object.keys(res.data).length, 11, 'deben ser exactamente 11 categorías');
 
   assert.ok(res.data.asistencias.subcategorias.tomar_asistencia.acciones.registrar);
   assert.ok(res.data.asistencias.subcategorias.reporte_asistencias.acciones.reportar, 'debe existir la acción reportar');
   assert.equal(Object.keys(res.data.asistencias.subcategorias).length, 2);
+
+  // Examenes replica la division de eventos: gestionar la convocatoria y leer
+  // la hoja de resultados son permisos distintos, y confundirlos abriria la
+  // hoja de resultados de todos los alumnos a quien solo organiza examenes.
+  assert.equal(Object.keys(res.data.examenes.subcategorias).length, 2);
+  assert.ok(res.data.examenes.subcategorias.examenes.acciones.crear);
+  assert.ok(res.data.examenes.subcategorias.reporte_examenes.acciones.ver);
+  assert.ok(!res.data.examenes.acciones, 'examenes debe usar subcategorias, no acciones planas');
 
   assert.ok(res.data.comprobantes.acciones.crear);
   assert.ok(res.data.comprobantes.acciones.editar);

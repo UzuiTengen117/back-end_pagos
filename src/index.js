@@ -39,6 +39,7 @@ const reembolsosRoutes = require('./routes/reembolsos');
 const permisosRoutes = require('./routes/permisos');
 const asistenciasRoutes = require('./routes/asistencias');
 const eventosRoutes = require('./routes/eventos');
+const examenesRoutes = require('./routes/examenes');
 
 app.get('/', (req, res) => {
   res.json({ message: 'API de Pagos funcionando' });
@@ -57,6 +58,7 @@ app.use('/api/reembolsos', auth, reembolsosRoutes);
 app.use('/api/permisos', auth, permisosRoutes);
 app.use('/api/asistencias', auth, asistenciasRoutes);
 app.use('/api/eventos', auth, eventosRoutes);
+app.use('/api/examenes', auth, examenesRoutes);
 
 app.use(errorHandler);
 
