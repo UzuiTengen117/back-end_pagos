@@ -15,12 +15,17 @@ CREATE TABLE IF NOT EXISTS examenes (
   cupo_maximo INTEGER,
   imagen TEXT,
   imagen_thumb TEXT,
+  hoja_inscripcion TEXT,
   estado VARCHAR(30) NOT NULL DEFAULT 'programado'
     CHECK (estado IN ('programado', 'en_curso', 'finalizado', 'cancelado')),
   creado_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Para las tablas que ya existan. IF NOT EXISTS lo hace idempotente: se puede
+-- correr el archivo entero las veces que haga falta.
+ALTER TABLE examenes ADD COLUMN IF NOT EXISTS hoja_inscripcion TEXT;
 
 CREATE INDEX IF NOT EXISTS examenes_fecha_examen_idx ON examenes (fecha_examen);
 

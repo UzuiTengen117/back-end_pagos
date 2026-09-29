@@ -18,6 +18,7 @@ const THUMB_MAX_BYTES = 200 * 1024;
 // backend, no solo en el <select> del formulario: un POST con "Gimnasio de
 // Cholula" debe rebotar con un 400 explicito y no con un 23514 de CHECK.
 const { SEDES } = require('../config/sedes');
+const { NOMBRE_ESCUELA } = require('../config/escuela');
 
 const MAX_NOMBRE = 255;
 const MAX_LUGAR = 255;
@@ -35,6 +36,27 @@ const EDAD_MAX = 99;
 // disco: la imagen viaja como data URL dentro de la fila.
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
+// La hoja de inscripcion es el PDF que sube el admin y baja el alumno. Techo
+// aparte del de la imagen: un PDF escaneado pesa mas que una foto. 5MB en
+// base64 son 6.7MB, pero solo viajan en la descarga, nunca en el listado.
+const HOJA_MAX_BYTES = 5 * 1024 * 1024;
+const uploadHoja = multer({ storage: multer.memoryStorage(), limits: { fileSize: HOJA_MAX_BYTES } });
+
+// multer aborta la subida EN EL MIDDLEWARE, antes de entrar al handler, y lanza
+// un MulterError. Sin este envoltorio un PDF de 6MB sale como 500 en vez de un
+// 400, y un 500 no le dice a nadie nada: el techo es justo lo que la persona
+// que lo esta subiendo necesita leer para saber que hacer.
+const soloHoja = (req, res, next) =>
+  uploadHoja.single('hoja')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        message: `El PDF supera el límite de ${HOJA_MAX_BYTES / (1024 * 1024)}MB`,
+      });
+    }
+    return next(err);
+  });
+
 // El listado NUNCA pide la imagen completa. A 2MB el base64 ocupa 2.67MB por
 // examen y Vercel corta la respuesta a 4.5MB: con dos banners la lista deja de
 // llegar y se rompe la pagina entera, no solo la foto. Se manda el thumbnail
@@ -49,6 +71,7 @@ const SELECT_EXAMENES = `
          e.descripcion, e.precio_inscripcion, e.cupo_maximo,
          e.imagen_thumb AS imagen,
          e.estado, e.created_at, e.updated_at,
+         e.hoja_inscripcion IS NOT NULL AS tiene_hoja,
          (SELECT COUNT(*) FROM examenes_inscripciones ei
            WHERE ei.examen_id = e.id AND ei.estado = 'inscrito') AS inscritos,
          (SELECT ei.id FROM examenes_inscripciones ei
@@ -60,8 +83,18 @@ const SELECT_EXAMENES = `
 // Solo el detalle trae la original: una fila unica queda holgadamente bajo el
 // limite de 4.5MB, y es la unica vista que necesita la imagen completa. Mantiene
 // los mismos conteos que el listado para que la respuesta sea intercambiable.
+//
+// La columna va enumerada A PROPOSITO y no con `e.*`. Con el asterisco,
+// agregar la columna hoja_inscripcion —que es el PDF completo en base64— hacia
+// que el detalle mandara hasta 6.7MB y rompiera la misma respuesta que aqui se
+// esta protegiendo. Cada columna que se agregue a la tabla hay que decidir si
+// entra por nombre o se queda afuera; no hay default seguro.
 const SELECT_EXAMEN = `
-  SELECT e.*,
+  SELECT e.id, e.nombre, e.fecha_examen, e.sede, e.lugar, e.niveles,
+         e.descripcion, e.precio_inscripcion, e.cupo_maximo,
+         e.imagen, e.imagen_thumb,
+         e.estado, e.created_at, e.updated_at, e.creado_por,
+         e.hoja_inscripcion IS NOT NULL AS tiene_hoja,
          (SELECT COUNT(*) FROM examenes_inscripciones ei
            WHERE ei.examen_id = e.id AND ei.estado = 'inscrito') AS inscritos,
          (SELECT ei.id FROM examenes_inscripciones ei
@@ -273,11 +306,19 @@ function construirNiveles(entrada) {
 // formulario: el endpoint es publico para cualquier sesion de estudiante, y un
 // cuerpo vacio colaria una fila en blanco que despues sale impresa en la lista
 // de asistencia del examen.
-function construirDatosInscripcion(body) {
+//
+// `opciones.escuela` sobrescribe el valor del cuerpo. El alta del alumno la pasa
+// con NOMBRE_ESCUELA porque todos los alumnos son de AMTKD y no tiene sentido que
+// decidan eso; la correccion del entrenador NO la pasa, y ahi si importa lo que
+// venga, porque se esta arreglando una inscripcion vieja con el nombre mal
+// escrito.
+function construirDatosInscripcion(body, opciones = {}) {
   const nombre = (body.nombre || '').trim();
   const primerApellido = (body.primer_apellido || '').trim();
   const grado = (body.grado || '').trim();
-  const escuela = (body.escuela || '').trim();
+  const escuela = opciones.escuela !== undefined
+    ? opciones.escuela
+    : (body.escuela || '').trim();
 
   if (!nombre) return { error: 'Escribe tu nombre' };
   if (nombre.length > MAX_NOMBRE) return { error: 'El nombre es demasiado largo' };
@@ -285,6 +326,9 @@ function construirDatosInscripcion(body) {
   if (primerApellido.length > MAX_NOMBRE) return { error: 'El apellido paterno es demasiado largo' };
   if (!grado) return { error: 'Escribe tu grado' };
   if (grado.length > MAX_GRADO) return { error: `El grado no puede superar ${MAX_GRADO} caracteres` };
+  // Estos dos siguen importando en la correccion del entrenador. En el alta no
+  // disparan nunca porque el valor viene forzado, y se dejan puestos para que
+  // una constante vacia o enorme en config/escuela.js no se colara en la base.
   if (!escuela) return { error: 'Escribe el nombre de tu escuela' };
   if (escuela.length > MAX_ESCUELA) return { error: 'El nombre de la escuela es demasiado largo' };
 
@@ -510,6 +554,122 @@ router.delete('/:id/imagen', permite('examenes', 'editar:examenes'), async (req,
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// La hoja de inscripcion: un PDF que sube el admin y baja el alumno inscrito.
+// Va aparte de la imagen por dos razones, no por capricho. Es otro tipo de dato
+// (no se pinta en una tarjeta, se descarga), y pesa mas: por eso tiene su propio
+// techo. Y NO viaja en el listado, ni en el detalle, ni en el alta: se pide
+// solo con GET /:id/hoja. Meter el base64 en el listado reventaria el mismo
+// limite de 4.5MB de Vercel que corta la respuesta cuando hay dos banners.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post('/:id/hoja', permite('examenes', 'editar:examenes'), soloHoja, async (req, res) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ message: 'examen no encontrado' });
+    }
+
+    const archivo = req.file;
+    if (!archivo) {
+      return res.status(400).json({ message: 'No se envió ningún PDF' });
+    }
+
+    if (archivo.mimetype !== 'application/pdf') {
+      return res.status(400).json({ message: 'Formato no válido. Solo se permiten archivos PDF' });
+    }
+
+    // El mimetype lo dice el navegador y se cambia en dos clics. Los primeros
+    // bytes de un PDF real son siempre "%PDF-", y eso no lo inventa un archivo
+    // renombrado. Sin esta comprobacion se podrian meter HTML o JS con
+    // extension .pdf, que al abrirse en el navegador se ejecuta en el origen de
+    // la academia.
+    if (archivo.buffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      return res.status(400).json({ message: 'El archivo no es un PDF válido' });
+    }
+
+    // Se guarda el base64 pelado, sin el prefijo "data:...;base64," que usa la
+    // imagen. A diferencia de la foto, este archivo nunca se pinta en un <img>
+    // ni en un <embed>, solo se descarga, asi que el prefijo no aporta nada y
+    // solo engorda la columna.
+    const base64 = archivo.buffer.toString('base64');
+
+    const result = await pool.query(
+      'UPDATE examenes SET hoja_inscripcion = $1, updated_at = NOW() WHERE id = $2 RETURNING id',
+      [base64, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'examen no encontrado' });
+    }
+
+    res.json({ message: 'Hoja de inscripción subida', nombre: archivo.originalname });
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
+router.delete('/:id/hoja', permite('examenes', 'editar:examenes'), async (req, res) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ message: 'examen no encontrado' });
+    }
+
+    const result = await pool.query(
+      'UPDATE examenes SET hoja_inscripcion = NULL, updated_at = NOW() WHERE id = $1 RETURNING id',
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'examen no encontrado' });
+    }
+
+    res.json({ message: 'Hoja de inscripción eliminada' });
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
+router.get('/:id/hoja', async (req, res) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ message: 'examen no encontrado' });
+    }
+
+    const result = await pool.query(
+      'SELECT nombre, hoja_inscripcion FROM examenes WHERE id = $1',
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'examen no encontrado' });
+    }
+
+    const { nombre, hoja_inscripcion } = result.rows[0];
+    if (!hoja_inscripcion) {
+      return res.status(404).json({ message: 'Este examen no tiene hoja de inscripción' });
+    }
+
+    // El nombre del examen va dentro de Content-Disposition, que es una cabecera
+    // y no un valor JSON: un nombre con comillas, salto de linea o acentos raro
+    // rompe la cabecera y el navegador descarga un archivo sin nombre. Se
+    // deja solo lo seguro y se ofrece en ASCII.
+    const nombreArchivo = `hoja-inscripcion-${String(nombre)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Za-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase()
+      .slice(0, 60) || 'examen'}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(Buffer.from(hoja_inscripcion, 'base64'));
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
 router.post('/agregar', permite('examenes', 'crear:examenes'), async (req, res) => {
   try {
     const construido = construirExamen(req.body);
@@ -580,7 +740,12 @@ router.post('/:id/inscribirse', async (req, res) => {
 
     // Se valida antes de abrir la transaccion: un formulario incompleto no
     // merece un BEGIN, y el mensaje de error llega sin round-trip a la base.
-    const datos = construirDatosInscripcion(req.body);
+    //
+    // La escuela se fuerza aqui y no se lee del cuerpo. Todos los alumnos son de
+    // AMTKD, asi que el modal se la muestra precargada y bloqueada; ignorarla
+    // aqui cierra el otro lado de la puerta, que es que alguien llame la API a
+    // mano y guarde otra escuela.
+    const datos = construirDatosInscripcion(req.body, { escuela: NOMBRE_ESCUELA });
     if (datos.error) {
       return res.status(400).json({ message: datos.error });
     }

@@ -45,4 +45,29 @@ function stop() {
   }
 }
 
-module.exports = { start, request, stop };
+// Para lo que `request` no cubre: subidas multipart y respuestas binarias.
+// Es una funcion aparte y no un parametro extra en `request` a proposito: cambiar
+// la forma de `request` obliga a revisar los ~200 tests que ya la usan.
+//
+// Con `form` NO se pone Content-Type a mano. Si se pusiera, el boundary que
+// genera fetch se pierde, el servidor no encuentra el final del cuerpo y multer
+// se queda sin archivo, tirando un 400 que parece del validador de formato y no
+// del transporte.
+async function requestRaw(method, path, { token, form } = {}) {
+  const headers = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const res = await fetch(`${baseUrl()}${path}`, {
+    method,
+    headers,
+    body: form,
+  });
+  return {
+    status: res.status,
+    headers: res.headers,
+    buffer: Buffer.from(await res.arrayBuffer()),
+  };
+}
+
+module.exports = { start, request, requestRaw, stop };

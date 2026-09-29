@@ -19,6 +19,7 @@ const THUMB_MAX_BYTES = 200 * 1024;
 // backend, no solo en el <select> del formulario: un POST con "Gimnasio de
 // Cholula" debe rebotar con un 400 explicito y no con un 23514 de CHECK.
 const { SEDES } = require('../config/sedes');
+const { NOMBRE_ESCUELA } = require('../config/escuela');
 
 const MAX_NOMBRE = 255;
 const MAX_LUGAR = 255;
@@ -276,11 +277,19 @@ function construirCintas(entrada) {
 // formulario: el endpoint es publico para cualquier sesion de estudiante, y un
 // cuerpo vacio colaria una fila en blanco que despues sale impresa en la lista
 // de asistencia del torneo.
-function construirDatosInscripcion(body) {
+//
+// `opciones.escuela` sobrescribe el valor del cuerpo. El alta del alumno la pasa
+// con NOMBRE_ESCUELA porque todos los alumnos son de AMTKD y no tiene sentido que
+// decidan eso; la correccion del entrenador NO la pasa, y ahi si importa lo que
+// venga, porque se esta arreglando una inscripcion vieja con el nombre mal
+// escrito.
+function construirDatosInscripcion(body, opciones = {}) {
   const nombre = (body.nombre || '').trim();
   const primerApellido = (body.primer_apellido || '').trim();
   const grado = (body.grado || '').trim();
-  const escuela = (body.escuela || '').trim();
+  const escuela = opciones.escuela !== undefined
+    ? opciones.escuela
+    : (body.escuela || '').trim();
 
   if (!nombre) return { error: 'Escribe tu nombre' };
   if (nombre.length > MAX_NOMBRE) return { error: 'El nombre es demasiado largo' };
@@ -583,7 +592,12 @@ router.post('/:id/inscribirse', async (req, res) => {
 
     // Se valida antes de abrir la transaccion: un formulario incompleto no
     // merece un BEGIN, y el mensaje de error llega sin round-trip a la base.
-    const datos = construirDatosInscripcion(req.body);
+    //
+    // La escuela se fuerza aqui y no se lee del cuerpo. Todos los alumnos son de
+    // AMTKD, asi que el modal se la muestra precargada y bloqueada; ignorarla
+    // aqui cierra el otro lado de la puerta, que es que alguien llame la API a
+    // mano y guarde otra escuela.
+    const datos = construirDatosInscripcion(req.body, { escuela: NOMBRE_ESCUELA });
     if (datos.error) {
       return res.status(400).json({ message: datos.error });
     }

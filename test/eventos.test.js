@@ -307,14 +307,32 @@ test('el alumno se inscribe en un evento programado → 201', async () => {
 
   const insert = calls.find((c) => c.text.includes('INSERT INTO eventos_inscripciones'));
   // parseId normaliza el id de ruta a entero, asi que ya no llega como texto.
-  // Los tres primeros son evento, alumno resuelto del token y usuario; los
-  // otros seis son el snapshot que el alumno escribio en el modal.
+  // Los tres primeros son evento, alumno resuelto del token y usuario. Los cinco
+  // siguientes son el snapshot que el alumno escribio. El ultimo NO lo escribio:
+  // lo impone el servidor con NOMBRE_ESCUELA, porque todos son de AMTKD.
   assert.deepEqual(
     insert.params,
-    [5, 22, 3, 'Juan Carlos', 'García', 'Hernández', 12, '4to', 'Escuela Primaria Federal'],
-    'el alumno_id se resuelve del token y los datos van en su propio orden'
+    [5, 22, 3, 'Juan Carlos', 'García', 'Hernández', 12, '4to', 'AMTKD'],
+    'el alumno_id se resuelve del token, la escuela la impone el servidor y los datos van en su propio orden'
   );
   assert.ok(calls.some((c) => c.text.includes('FOR UPDATE')), 'el cupo se bloquea con FOR UPDATE');
+});
+
+// La escuela del cuerpo se ignora en el alta. Sin esto, el backend aceptaria que
+// alguien llame la API a mano y guarde cualquier escuela, y la columna empiezaria
+// a juntar valores que nadie puede ver en el modal.
+test('el alta ignora la escuela que mande el cuerpo → guarda AMTKD', async () => {
+  await start();
+  const { calls } = install(handlersInscripcion());
+
+  const res = await request('POST', '/api/eventos/5/inscribirse', {
+    token: token('estudiante', 3),
+    body: { ...DATOS_INSCRIPCION, escuela: 'Otra Escuela Inventada' },
+  });
+  assert.equal(res.status, 201);
+
+  const insert = calls.find((c) => c.text.includes('INSERT INTO eventos_inscripciones'));
+  assert.equal(insert.params[8], 'AMTKD', 'la escuela del cuerpo no llega al INSERT');
 });
 
 test('el alumno no puede forjar el alumno_id desde el body', async () => {
@@ -453,7 +471,10 @@ test('inscribirse sin datos → 400 y sin tocar la base', async () => {
   assert.match(vacio.data.message, /nombre/i);
   assert.ok(!calls.some((c) => c.text.includes('INSERT INTO eventos_inscripciones')), 'no debe insertar');
 
-  for (const campo of ['primer_apellido', 'grado', 'escuela']) {
+  // `escuela` no va en la lista: el alta la impone el servidor, asi que mandarla
+  // en blanco ya no es un dato faltante. Ver el test de mas abajo, que sigue
+  // exigiendola en la correccion del entrenador.
+  for (const campo of ['primer_apellido', 'grado']) {
     install(handlersInscripcion());
     const res = await request('POST', '/api/eventos/5/inscribirse', {
       token: token('estudiante'),
@@ -461,6 +482,36 @@ test('inscribirse sin datos → 400 y sin tocar la base', async () => {
     });
     assert.equal(res.status, 400, `sin ${campo} debe rebotar`);
   }
+});
+
+// El trainer sigue pudiendo corregir la escuela de una inscripcion vieja. Por eso
+// el alta ignora el campo pero esta ruta no: es el unico camino para arreglar un
+// expediente con el nombre mal escrito.
+test('corregir sin escuela → 400; corregir con escuela → la guarda', async () => {
+  await start();
+
+  // El PATCH exige `editar:eventos`; sin este handler el permiso falla con 403
+  // y el test pasaria por el motivo equivocado.
+  const editar = ['eventos:editar:eventos'];
+
+  install([PERMISOS_CON(editar)]);
+  const sin = await request('PATCH', '/api/eventos/5/inscritos/9', {
+    token: token('profesor'),
+    body: { ...DATOS_INSCRIPCION, escuela: '   ' },
+  });
+  assert.equal(sin.status, 400, 'la correccion si exige la escuela');
+
+  const { calls } = install([
+    PERMISOS_CON(editar),
+    { match: 'UPDATE eventos_inscripciones', result: () => ({ rows: [{ id: 9 }] }) },
+  ]);
+  const con = await request('PATCH', '/api/eventos/5/inscritos/9', {
+    token: token('profesor'),
+    body: { ...DATOS_INSCRIPCION, escuela: 'Escuela Corregida' },
+  });
+  assert.equal(con.status, 200);
+  const update = calls.find((c) => c.text.includes('UPDATE eventos_inscripciones'));
+  assert.ok(update.params.includes('Escuela Corregida'), 'el trainer si puede corregir la escuela');
 });
 
 test('edad fuera de rango o no entera → 400; vacia o valida → pasa', async () => {
@@ -508,7 +559,10 @@ test('los datos del snapshot se guardan en el INSERT y al reactivar', async () =
   const update = calls.find((c) => c.text.includes('UPDATE eventos_inscripciones SET'));
   assert.ok(update, 'debe reactivar la fila existente');
   assert.ok(update.text.includes('escuela = $7'), 'la reactivacion tambien actualiza el snapshot');
-  assert.ok(update.params.includes('Otra Escuela'), 'la escuela corregida debe quedar guardada');
+  // La reactivación va por la ruta del alta, asi que tambien lleva la escuela
+  // impuesta. Reinscribirse no es el camino para corregir una escuela: ese es el
+  // PATCH del entrenador.
+  assert.ok(update.params.includes('AMTKD'), 'la escuela la impone el servidor tambien al reactivar');
   assertPlaceholders(update);
 });
 
@@ -765,8 +819,10 @@ test('corregir una inscripcion de OTRO evento responde 404 y no escribe', async 
   assertPlaceholders(update);
 });
 
-// La validacion es la misma que al inscribirse: si el editor aceptara algo que
-// el alta rechaza, se podrian meter datos que el alta prohibe.
+// La validacion es la misma que al inscribirse, con una diferencia: el alta
+// ignora la escuela porque la impone el servidor, y esta correccion no, porque es
+// el unico camino para arreglar una inscripcion vieja mal escrita. Por eso
+// 'escuela' sigue valiendo aqui.
 test('corregir valida los datos igual que al inscribirse', async () => {
   await start();
 

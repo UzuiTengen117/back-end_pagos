@@ -339,6 +339,10 @@ CREATE TABLE IF NOT EXISTS examenes (
   -- pide `imagen`: a 2MB el base64 son 2.67MB por examen y dos carteles ya
   -- reventan el limite de 4.5MB de respuesta de Vercel.
   imagen_thumb TEXT,
+  -- PDF que sube el admin y baja el alumno inscrito. Base64 pelado, sin el
+  -- prefijo "data:...;base64," que si usa la imagen, porque este nunca se pinta
+  -- en un <img>: solo se descarga. Techo de 5MB aplicado por multer.
+  hoja_inscripcion TEXT,
   estado VARCHAR(30) NOT NULL DEFAULT 'programado'
     CHECK (estado IN ('programado', 'en_curso', 'finalizado', 'cancelado')),
   creado_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
@@ -347,6 +351,10 @@ CREATE TABLE IF NOT EXISTS examenes (
 );
 
 CREATE INDEX IF NOT EXISTS examenes_fecha_examen_idx ON examenes (fecha_examen);
+
+-- Para una base donde la tabla examenes ya existia sin esta columna. Es
+-- idempotente, asi que se puede correr el archivo las veces que haga falta.
+ALTER TABLE examenes ADD COLUMN IF NOT EXISTS hoja_inscripcion TEXT;
 
 -- Inscripcion del alumno a un examen. Guarda usuario_id ademas de alumno_id
 -- porque es lo que identifica al actor en el JWT.

@@ -1,0 +1,23 @@
+# El .env NUNCA se despliega. Sin esta linea la CLI sube el archivo entero al
+# bundle de produccion, y con el una connection string de Supabase queda
+# guardada dentro del deployment. Vercel lee las variables del proyecto, no del
+# archivo, asi que excluirlas no rompe nada.
+.env
+.env*
+!.env.example
+
+# Las pruebas no se ejecutan en produccion
+test/
+tests/
+**/*.test.js
+
+# Ruido local
+.git
+.gitignore
+.vscode
+.idea
+*.log
+npm-debug.log*
+
+# Documentacion
+*.md

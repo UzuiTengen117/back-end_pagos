@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const jwt = require('jsonwebtoken');
 
-const { start, request, stop } = require('./helpers/http');
+const { start, request, requestRaw, stop } = require('./helpers/http');
 const { install } = require('./helpers/mockPool');
 
 after(() => stop());
@@ -300,14 +300,32 @@ test('el alumno se inscribe en un examen programado → 201', async () => {
 
   const insert = calls.find((c) => c.text.includes('INSERT INTO examenes_inscripciones'));
   // parseId normaliza el id de ruta a entero, asi que ya no llega como texto.
-  // Los tres primeros son examen, alumno resuelto del token y usuario; los
-  // otros seis son el snapshot que el alumno escribio en el modal.
+  // Los tres primeros son examen, alumno resuelto del token y usuario. Los cinco
+  // siguientes son el snapshot que el alumno escribio. El ultimo NO lo escribio:
+  // lo impone el servidor con NOMBRE_ESCUELA, porque todos son de AMTKD.
   assert.deepEqual(
     insert.params,
-    [5, 22, 3, 'Juan Carlos', 'García', 'Hernández', 12, '4to', 'Escuela Primaria Federal'],
-    'el alumno_id se resuelve del token y los datos van en su propio orden'
+    [5, 22, 3, 'Juan Carlos', 'García', 'Hernández', 12, '4to', 'AMTKD'],
+    'el alumno_id se resuelve del token, la escuela la impone el servidor y los datos van en su propio orden'
   );
   assert.ok(calls.some((c) => c.text.includes('FOR UPDATE')), 'el cupo se bloquea con FOR UPDATE');
+});
+
+// La escuela del cuerpo se ignora en el alta. Sin esto, el backend aceptaria que
+// alguien llame la API a mano y guarde cualquier escuela, y la columna empezaria
+// a juntar valores que nadie puede ver en el modal.
+test('el alta ignora la escuela que mande el cuerpo → guarda AMTKD', async () => {
+  await start();
+  const { calls } = install(handlersInscripcion());
+
+  const res = await request('POST', '/api/examenes/5/inscribirse', {
+    token: token('estudiante', 3),
+    body: { ...DATOS_INSCRIPCION, escuela: 'Otra Escuela Inventada' },
+  });
+  assert.equal(res.status, 201);
+
+  const insert = calls.find((c) => c.text.includes('INSERT INTO examenes_inscripciones'));
+  assert.equal(insert.params[8], 'AMTKD', 'la escuela del cuerpo no llega al INSERT');
 });
 
 test('el alumno no puede forjar el alumno_id desde el body', async () => {
@@ -436,7 +454,7 @@ test('cancelar inscripcion → mensaje; sin inscripcion activa → 404', async (
 
 // El endpoint acepta un cuerpo vacio desde cualquier sesion de estudiante, y lo
 // que valida mal acaba impreso en la lista de asistencia del torneo: una fila
-// sin nombre ni escuela no se nota en la base, se nota el dia del examen.
+// sin nombre no se nota en la base, se nota el dia del examen.
 test('inscribirse sin datos → 400 y sin tocar la base', async () => {
   await start();
   const { calls } = install(handlersInscripcion());
@@ -446,7 +464,10 @@ test('inscribirse sin datos → 400 y sin tocar la base', async () => {
   assert.match(vacio.data.message, /nombre/i);
   assert.ok(!calls.some((c) => c.text.includes('INSERT INTO examenes_inscripciones')), 'no debe insertar');
 
-  for (const campo of ['primer_apellido', 'grado', 'escuela']) {
+  // `escuela` no va en la lista: el alta la impone el servidor, asi que mandarla
+  // en blanco ya no es un dato faltante. Ver el test de mas abajo, que sigue
+  // exigiendola en la correccion del entrenador.
+  for (const campo of ['primer_apellido', 'grado']) {
     install(handlersInscripcion());
     const res = await request('POST', '/api/examenes/5/inscribirse', {
       token: token('estudiante'),
@@ -454,6 +475,36 @@ test('inscribirse sin datos → 400 y sin tocar la base', async () => {
     });
     assert.equal(res.status, 400, `sin ${campo} debe rebotar`);
   }
+});
+
+// El trainer sigue pudiendo corregir la escuela de una inscripcion vieja. Por eso
+// el alta ignora el campo pero esta ruta no: es el unico camino para arreglar un
+// expediente con el nombre mal escrito.
+test('corregir sin escuela → 400; corregir con escuela → la guarda', async () => {
+  await start();
+
+  // El PATCH exige `editar:examenes`; sin este handler el permiso falla con 403
+  // y el test pasaria por el motivo equivocado.
+  const editar = ['examenes:editar:examenes'];
+
+  install([PERMISOS_CON(editar)]);
+  const sin = await request('PATCH', '/api/examenes/5/inscritos/9', {
+    token: token('profesor'),
+    body: { ...DATOS_INSCRIPCION, escuela: '   ' },
+  });
+  assert.equal(sin.status, 400, 'la correccion si exige la escuela');
+
+  const { calls } = install([
+    PERMISOS_CON(editar),
+    { match: 'UPDATE examenes_inscripciones', result: () => ({ rows: [{ id: 9 }] }) },
+  ]);
+  const con = await request('PATCH', '/api/examenes/5/inscritos/9', {
+    token: token('profesor'),
+    body: { ...DATOS_INSCRIPCION, escuela: 'Escuela Corregida' },
+  });
+  assert.equal(con.status, 200);
+  const update = calls.find((c) => c.text.includes('UPDATE examenes_inscripciones'));
+  assert.ok(update.params.includes('Escuela Corregida'), 'el trainer si puede corregir la escuela');
 });
 
 test('edad fuera de rango o no entera → 400; vacia o valida → pasa', async () => {
@@ -501,7 +552,10 @@ test('los datos del snapshot se guardan en el INSERT y al reactivar', async () =
   const update = calls.find((c) => c.text.includes('UPDATE examenes_inscripciones SET'));
   assert.ok(update, 'debe reactivar la fila existente');
   assert.ok(update.text.includes('escuela = $7'), 'la reactivacion tambien actualiza el snapshot');
-  assert.ok(update.params.includes('Otra Escuela'), 'la escuela corregida debe quedar guardada');
+  // La reactivación va por la ruta del alta, asi que tambien lleva la escuela
+  // impuesta. Reinscribirse no es el camino para corregir una escuela: ese es el
+  // PATCH del entrenador.
+  assert.ok(update.params.includes('AMTKD'), 'la escuela la impone el servidor tambien al reactivar');
   assertPlaceholders(update);
 });
 
@@ -758,8 +812,10 @@ test('corregir una inscripcion de OTRO examen responde 404 y no escribe', async 
   assertPlaceholders(update);
 });
 
-// La validacion es la misma que al inscribirse: si el editor aceptara algo que
-// el alta rechaza, se podrian meter datos que el alta prohibe.
+// La validacion es la misma que al inscribirse, con una diferencia: el alta
+// ignora la escuela porque la impone el servidor, y esta correccion no, porque es
+// el unico camino para arreglar una inscripcion vieja mal escrita. Por eso
+// 'escuela' sigue valiendo aqui.
 test('corregir valida los datos igual que al inscribirse', async () => {
   await start();
 
@@ -778,4 +834,198 @@ test('corregir valida los datos igual que al inscribirse', async () => {
     assert.equal(res.status, 400, `deberia rechazar ${JSON.stringify(body)}`);
     assert.match(res.data.message, new RegExp(esperado, 'i'));
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hoja de inscripcion en PDF. El admin la sube y el alumno inscrito la baja.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Un PDF minimo pero con la firma correcta. Lo unico que mira el backend son los
+// primeros 5 bytes, asi que alcanza con %PDF- adelante.
+const PDF_VALIDO = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< >>\n%%EOF\n');
+
+// El ataque que justifica la comprobacion de firma: un HTML con la extension
+// .pdf. Si el backend solo mirara el mimetype, esto pasaria y al abrirlo el
+// navegador lo ejecutaria en el origen de la academia.
+const HTML_FINGIDO = Buffer.from('<html><script>alert(document.cookie)</script></html>');
+
+function formConHoja(buffer, { nombre = 'hoja.pdf', tipo = 'application/pdf' } = {}) {
+  const form = new FormData();
+  form.append('hoja', new Blob([buffer], { type: tipo }), nombre);
+  return form;
+}
+
+test('el listado manda tiene_hoja, nunca los bytes del PDF', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'FROM examenes e', result: () => ({ rows: [{ id: 1 }] }) },
+  ]);
+
+  const res = await request('GET', '/api/examenes', { token: token('estudiante') });
+  assert.equal(res.status, 200);
+
+  const consulta = calls.find((c) => c.text.includes('FROM examenes e')).text;
+  assert.match(consulta, /hoja_inscripcion IS NOT NULL AS tiene_hoja/,
+    'el listado debe exponer el booleano para decidir si mostrar el boton');
+
+  // La columna sin projecting: 5MB en base64 son 6.7MB por examen y la respuesta
+  // revienta el limite de 4.5MB de Vercel.
+  assert.ok(!/e\.hoja_inscripcion\s*(,|\n)/.test(consulta),
+    'el listado no puede seleccionar hoja_inscripcion: son varios MB por fila');
+});
+
+test('el detalle tampoco manda los bytes del PDF', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'SELECT e.id, e.nombre, e.fecha_examen', result: () => ({ rows: [{ id: 1 }] }) },
+  ]);
+
+  const res = await request('GET', '/api/examenes/ver/1', { token: token('estudiante') });
+  assert.equal(res.status, 200);
+
+  const consulta = calls.find((c) => c.text.includes('SELECT e.id, e.nombre, e.fecha_examen')).text;
+  assert.ok(!/e\.hoja_inscripcion\s*(,|\n)/.test(consulta),
+    'el detalle no puede seleccionar hoja_inscripcion');
+});
+
+test('subir un PDF valido lo guarda en base64', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_CON(['examenes:editar:examenes']),
+    { match: 'UPDATE examenes SET hoja_inscripcion = $1', result: () => ({ rows: [{ id: 3 }] }) },
+  ]);
+
+  const res = await requestRaw('POST', '/api/examenes/3/hoja', {
+    token: token('profesor'),
+    form: formConHoja(PDF_VALIDO),
+  });
+  assert.equal(res.status, 200, `subir un PDF valido no puede fallar: ${res.buffer.toString()}`);
+
+  const call = calls.find((c) => c.text.includes('UPDATE examenes SET hoja_inscripcion = $1'));
+  assertPlaceholders(call);
+  assert.equal(call.params[0], PDF_VALIDO.toString('base64'),
+    'lo guardado debe ser el base64 pelado, sin el prefijo data:');
+  assert.equal(call.params[1], 3, 'el id del examen va como segundo parametro');
+});
+
+test('rechaza un PDF que en realidad es HTML con la firma correcta', async () => {
+  await start();
+  const { calls } = install([PERMISOS_CON(['examenes:editar:examenes'])]);
+
+  const res = await requestRaw('POST', '/api/examenes/3/hoja', {
+    token: token('profesor'),
+    form: formConHoja(HTML_FINGIDO, { nombre: 'hoja.pdf', tipo: 'application/pdf' }),
+  });
+  assert.equal(res.status, 400, 'el mimetype solo no alcanza: hay que mirar los bytes');
+  assert.ok(!calls.some((c) => c.text.includes('UPDATE examenes')),
+    'un archivo que no es PDF no debe llegar al UPDATE');
+});
+
+test('rechaza un archivo que ni siquiera es PDF', async () => {
+  await start();
+  install([PERMISOS_CON(['examenes:editar:examenes'])]);
+
+  const res = await requestRaw('POST', '/api/examenes/3/hoja', {
+    token: token('profesor'),
+    form: formConHoja(Buffer.from('imagen'), { nombre: 'foto.png', tipo: 'image/png' }),
+  });
+  assert.equal(res.status, 400, 'solo application/pdf');
+});
+
+test('sin permiso de editar no se puede subir la hoja', async () => {
+  await start();
+  install([PERMISOS_CON(['examenes:ver_inscritos'])]);
+
+  const res = await requestRaw('POST', '/api/examenes/3/hoja', {
+    token: token('profesor'),
+    form: formConHoja(PDF_VALIDO),
+  });
+  assert.equal(res.status, 403, 'subir la hoja es editar el examen');
+});
+
+test('subir la hoja de un examen que no existe da 404', async () => {
+  await start();
+  // El UPDATE tiene que devolver cero filas: eso es lo que el backend usa para
+  // saber que el examen no existe. Sin este handler el mock revienta antes y el
+  // test mide 500 por una falta del mock, no el 404 que se quiere comprobar.
+  install([
+    PERMISOS_CON(['examenes:editar:examenes']),
+    { match: 'UPDATE examenes SET hoja_inscripcion = $1', result: () => ({ rows: [] }) },
+  ]);
+
+  const res = await requestRaw('POST', '/api/examenes/999/hoja', {
+    token: token('profesor'),
+    form: formConHoja(PDF_VALIDO),
+  });
+  assert.equal(res.status, 404);
+});
+
+test('descargar devuelve el PDF con el nombre y los bytes correctos', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    {
+      match: 'SELECT nombre, hoja_inscripcion FROM examenes',
+      result: () => ({ rows: [{ nombre: 'Torneo de Verano', hoja_inscripcion: PDF_VALIDO.toString('base64') }] }),
+    },
+  ]);
+
+  const res = await requestRaw('GET', '/api/examenes/4/hoja', { token: token('estudiante') });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'application/pdf');
+  assert.equal(res.headers.get('content-disposition'), 'attachment; filename="hoja-inscripcion-torneo-de-verano.pdf"');
+  assert.equal(res.buffer.toString(), PDF_VALIDO.toString(),
+    'lo que baja tiene que ser el archivo original, byte a byte');
+});
+
+test('el nombre del archivo baja limpio en acentos y simbolos', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    {
+      match: 'SELECT nombre, hoja_inscripcion FROM examenes',
+      result: () => ({ rows: [{ nombre: 'Examen "Cinta" Áurea 2026/2', hoja_inscripcion: PDF_VALIDO.toString('base64') }] }),
+    },
+  ]);
+
+  const res = await requestRaw('GET', '/api/examenes/5/hoja', { token: token('estudiante') });
+  assert.equal(res.status, 200);
+  // Una comilla sin escapar ahi revienta la cabecera entera y la descarga llega
+  // sin nombre o con el nombre cortado.
+  assert.equal(res.headers.get('content-disposition'), 'attachment; filename="hoja-inscripcion-examen-cinta-aurea-2026-2.pdf"');
+});
+
+test('descargar cuando no hay hoja da 404, no un PDF vacio', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: 'SELECT nombre, hoja_inscripcion FROM examenes', result: () => ({ rows: [{ nombre: 'X', hoja_inscripcion: null }] }) },
+  ]);
+
+  const res = await requestRaw('GET', '/api/examenes/6/hoja', { token: token('estudiante') });
+  assert.equal(res.status, 404);
+});
+
+test('quitar la hoja la borra de verdad', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_CON(['examenes:editar:examenes']),
+    { match: 'UPDATE examenes SET hoja_inscripcion = NULL', result: () => ({ rows: [{ id: 7 }] }) },
+  ]);
+
+  const res = await request('DELETE', '/api/examenes/7/hoja', { token: token('profesor') });
+  assert.equal(res.status, 200);
+
+  const call = calls.find((c) => c.text.includes('UPDATE examenes SET hoja_inscripcion = NULL'));
+  assertPlaceholders(call);
+});
+
+test('un alumno sin sesion no descarga la hoja', async () => {
+  await start();
+  install([PERMISOS_VACIO, { match: 'SELECT nombre, hoja_inscripcion FROM examenes', result: () => ({ rows: [] }) }]);
+
+  const res = await requestRaw('GET', '/api/examenes/8/hoja');
+  assert.equal(res.status, 401);
 });
