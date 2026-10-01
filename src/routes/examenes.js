@@ -20,6 +20,7 @@ const THUMB_MAX_BYTES = 200 * 1024;
 // Cholula" debe rebotar con un 400 explicito y no con un 23514 de CHECK.
 const { SEDES } = require('../config/sedes');
 const { NOMBRE_ESCUELA } = require('../config/escuela');
+const { HOJA_POR_DEFECTO_BASE64 } = require('../config/hojaPorDefecto');
 
 const MAX_NOMBRE = 255;
 const MAX_LUGAR = 255;
@@ -105,7 +106,7 @@ const SELECT_EXAMENES = `
          e.descripcion, e.precio_inscripcion, e.cupo_maximo,
          e.imagen_thumb AS imagen,
          e.estado, e.created_at, e.updated_at,
-         e.hoja_inscripcion IS NOT NULL AS tiene_hoja,
+         TRUE AS tiene_hoja,
          (SELECT COUNT(*) FROM examenes_inscripciones ei
            WHERE ei.examen_id = e.id AND ei.estado = 'inscrito') AS inscritos,
          (SELECT ei.id FROM examenes_inscripciones ei
@@ -128,7 +129,7 @@ const SELECT_EXAMEN = `
          e.descripcion, e.precio_inscripcion, e.cupo_maximo,
          e.imagen, e.imagen_thumb,
          e.estado, e.created_at, e.updated_at, e.creado_por,
-         e.hoja_inscripcion IS NOT NULL AS tiene_hoja,
+         TRUE AS tiene_hoja,
          (SELECT COUNT(*) FROM examenes_inscripciones ei
            WHERE ei.examen_id = e.id AND ei.estado = 'inscrito') AS inscritos,
          (SELECT ei.id FROM examenes_inscripciones ei
@@ -860,12 +861,17 @@ router.delete('/:id/imagen', permite('examenes', 'editar:examenes'), async (req,
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// La hoja de inscripcion: un PDF que sube el admin y baja el alumno inscrito.
-// Va aparte de la imagen por dos razones, no por capricho. Es otro tipo de dato
-// (no se pinta en una tarjeta, se descarga), y pesa mas: por eso tiene su propio
-// techo. Y NO viaja en el listado, ni en el detalle, ni en el alta: se pide
-// solo con GET /:id/hoja. Meter el base64 en el listado reventaria el mismo
-// limite de 4.5MB de Vercel que corta la respuesta cuando hay dos banners.
+// La hoja de inscripcion: el PDF que baja el alumno inscrito.
+//
+// Es la MISMA para todos los examenes, la de la institucion, y va EMBEBIDA en el
+// codigo (config/hojaPorDefecto). Por eso el alta no la sube nadie: se guarda
+// sola, y admin o profesor crean el examen con la hoja puesta sin tocar un
+// archivo. El campo de subida sigue existiendo para el caso raro de que una
+// sesion concreta traiga otra version de la institucion.
+//
+// El base64 pelado, sin el prefijo "data:...;base64," que usa la imagen: este
+// archivo nunca se pinta en un <img> ni en un <embed>, solo se descarga, asi que
+// el prefijo no aporta nada y solo engorda la columna.
 // ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/:id/hoja', permite('examenes', 'editar:examenes'), soloHoja, async (req, res) => {
@@ -893,10 +899,6 @@ router.post('/:id/hoja', permite('examenes', 'editar:examenes'), soloHoja, async
       return res.status(400).json({ message: 'El archivo no es un PDF válido' });
     }
 
-    // Se guarda el base64 pelado, sin el prefijo "data:...;base64," que usa la
-    // imagen. A diferencia de la foto, este archivo nunca se pinta en un <img>
-    // ni en un <embed>, solo se descarga, asi que el prefijo no aporta nada y
-    // solo engorda la columna.
     const base64 = archivo.buffer.toString('base64');
 
     const result = await pool.query(
@@ -950,8 +952,12 @@ router.get('/:id/hoja', async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ message: 'No estás inscrito en este examen' });
 
     const inscripcion = result.rows[0];
-    const { examen_nombre, hoja_inscripcion } = inscripcion;
-    if (!hoja_inscripcion) return res.status(404).json({ message: 'Este examen no tiene hoja de inscripción' });
+    const { examen_nombre } = inscripcion;
+    // La columna puede venir vacia en un examen creado antes de que la hoja
+    // por defecto existiera. En vez de un 404 se sirve la misma de siempre: el
+    // alumno tiene derecho a su hoja, y la fila no saber cuando se creo no es
+    // un motivo para negarsela.
+    const hoja_inscripcion = inscripcion.hoja_inscripcion || HOJA_POR_DEFECTO_BASE64;
 
     const nombreSeguro = String(examen_nombre).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 60) || 'examen';
     const nombreArchivo = 'solicitud-examen-' + nombreSeguro + '.pdf';
@@ -1003,13 +1009,18 @@ router.post('/agregar', permite('examenes', 'crear:examenes'), async (req, res) 
     }
     const v = construido.values;
 
+    // La hoja va en el mismo INSERT y no en una segunda llamada: la fila nace
+    // completa, sin una ventana en la que el examen existe sin hoja y un alumno
+    // alcanza a verlo sin el boton de descargar.
     const result = await pool.query(
       `INSERT INTO examenes (nombre, estado, fecha_examen, sede, lugar, niveles,
-                            descripcion, precio_inscripcion, cupo_maximo, creado_por)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            descripcion, precio_inscripcion, cupo_maximo, creado_por,
+                            hoja_inscripcion)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [v.nombre, v.estado, v.fecha_examen, v.sede, v.lugar, v.niveles,
-       v.descripcion, v.precio_inscripcion, v.cupo_maximo, req.user.id]
+       v.descripcion, v.precio_inscripcion, v.cupo_maximo, req.user.id,
+       HOJA_POR_DEFECTO_BASE64]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {

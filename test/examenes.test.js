@@ -104,8 +104,29 @@ test('crear examen → 201 y el INSERT viaja parametrizado', async () => {
   const insert = calls.find((c) => c.text.includes('INSERT INTO examenes'));
   assert.ok(insert, 'debe haberse ejecutado el INSERT');
   assert.ok(insert.params.includes('Examen de Cinta Amarilla'), 'el nombre debe ir en los parametros');
-  assert.equal(insert.params.at(-1), 1, 'creado_por debe ser el id del usuario del token');
+  assert.equal(insert.params.at(-2), 1, 'creado_por debe ser el id del usuario del token');
   assertPlaceholders(insert);
+});
+
+test('crear examen guarda la hoja por defecto sin que nadie la suba', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'INSERT INTO examenes', result: () => ({ rows: [{ id: 7, ...EXAMEN_VALIDO }] }) },
+  ]);
+
+  await request('POST', '/api/examenes/agregar', { token: token('admin'), body: EXAMEN_VALIDO });
+
+  const insert = calls.find((c) => c.text.includes('INSERT INTO examenes'));
+  // La hoja va en el MISMO INSERT, no en una llamada aparte: asi la fila nunca
+  // existe sin hoja y un alumno no alcanza a verla sin el boton de descargar.
+  assert.match(insert.text, /hoja_inscripcion/, 'la hoja tiene que ir en el INSERT de alta');
+
+  const { HOJA_POR_DEFECTO_BASE64 } = require('../src/config/hojaPorDefecto');
+  assert.equal(insert.params.at(-1), HOJA_POR_DEFECTO_BASE64,
+    'debe mandar la hoja empaquetada, no un null');
+  assert.ok(Buffer.from(insert.params.at(-1), 'base64').subarray(0, 5).toString('latin1') === '%PDF-',
+    'lo que se guarda tiene que ser el PDF real');
 });
 
 test('sin nombre, fecha invalida o ausente → 400', async () => {
@@ -1136,12 +1157,15 @@ test('corregir valida los datos igual que al inscribirse', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hoja de inscripcion en PDF. El admin la sube y el alumno inscrito la baja.
+// Hoja de inscripcion en PDF. El alumno inscrito la baja, ya rellena.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Un PDF minimo pero con la firma correcta. Lo unico que mira el backend son los
-// primeros 5 bytes, asi que alcanza con %PDF- adelante.
-const PDF_VALIDO = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< >>\n%%EOF\n');
+// El PDF de VERDAD, el mismo que embebe el backend. Hace falta el real y no uno
+// de mentira porque la descarga no lo copia tal cual: lo abre con pdf-lib,
+// rellena los campos del formulario y lo vuelve a guardar. Un PDF minimo con la
+// firma "%PDF-" pasa la validacion de subida, pero revienta en cuanto pdf-lib
+// intenta buscar el formulario, y el test mediria ese error y no la hoja.
+const PDF_VALIDO = require('../src/config/hojaPorDefecto').HOJA_POR_DEFECTO;
 
 // El ataque que justifica la comprobacion de firma: un HTML con la extension
 // .pdf. Si el backend solo mirara el mimetype, esto pasaria y al abrirlo el
@@ -1165,13 +1189,17 @@ test('el listado manda tiene_hoja, nunca los bytes del PDF', async () => {
   assert.equal(res.status, 200);
 
   const consulta = calls.find((c) => c.text.includes('FROM examenes e')).text;
-  assert.match(consulta, /hoja_inscripcion IS NOT NULL AS tiene_hoja/,
-    'el listado debe exponer el booleano para decidir si mostrar el boton');
-
-  // La columna sin projecting: 5MB en base64 son 6.7MB por examen y la respuesta
-  // revienta el limite de 4.5MB de Vercel.
+  // El listado NO puede seleccionar hoja_inscripcion: 5MB en base64 son 6.7MB
+  // por fila y la respuesta revienta el limite de 4.5MB de Vercel.
   assert.ok(!/e\.hoja_inscripcion\s*(,|\n)/.test(consulta),
     'el listado no puede seleccionar hoja_inscripcion: son varios MB por fila');
+
+  // Y `tiene_hoja` ya no puede depender de la columna: la hoja va embebida, asi
+  // que un examen creado antes de que existiera tambien la tiene.
+  assert.ok(!/e\.hoja_inscripcion IS NOT NULL/.test(consulta),
+    'tiene_hoja ya no debe leer la columna: siempre hay hoja');
+  assert.match(consulta, /TRUE AS tiene_hoja/,
+    'el listado debe decir que siempre hay hoja');
 });
 
 test('el detalle tampoco manda los bytes del PDF', async () => {
@@ -1261,50 +1289,75 @@ test('subir la hoja de un examen que no existe da 404', async () => {
   assert.equal(res.status, 404);
 });
 
+// La descarga hace DOS consultas: primero resuelve el alumno del usuario, y
+// despues pide el snapshot de SU inscripcion. Los mocks tienen que cubrir las
+// dos o el mock revienta antes de llegar al PDF y el test mide un 500 del mock,
+// no el 200 que quiere comprobar.
+const ALUMNO = { match: 'SELECT id FROM alumnos WHERE usuario_id = $1', result: () => ({ rows: [{ id: 55 }] }) };
+
+const HOJA_DE = (nombre) => ({
+  match: 'FROM examenes e JOIN examenes_inscripciones ei',
+  result: () => ({
+    rows: [{ examen_nombre: nombre, hoja_inscripcion: PDF_VALIDO.toString('base64') }],
+  }),
+});
+
 test('descargar devuelve el PDF con el nombre y los bytes correctos', async () => {
   await start();
-  install([
-    PERMISOS_VACIO,
-    {
-      match: 'SELECT nombre, hoja_inscripcion FROM examenes',
-      result: () => ({ rows: [{ nombre: 'Torneo de Verano', hoja_inscripcion: PDF_VALIDO.toString('base64') }] }),
-    },
-  ]);
+  install([PERMISOS_VACIO, ALUMNO, HOJA_DE('Torneo de Verano')]);
 
   const res = await requestRaw('GET', '/api/examenes/4/hoja', { token: token('estudiante') });
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('content-type'), 'application/pdf');
-  assert.equal(res.headers.get('content-disposition'), 'attachment; filename="hoja-inscripcion-torneo-de-verano.pdf"');
-  assert.equal(res.buffer.toString(), PDF_VALIDO.toString(),
-    'lo que baja tiene que ser el archivo original, byte a byte');
+  assert.equal(res.headers.get('content-disposition'), 'attachment; filename="solicitud-examen-torneo-de-verano.pdf"');
+  assert.equal(res.buffer.subarray(0, 5).toString('latin1'), '%PDF-',
+    'lo que baja tiene que ser un PDF de verdad');
 });
 
 test('el nombre del archivo baja limpio en acentos y simbolos', async () => {
   await start();
-  install([
-    PERMISOS_VACIO,
-    {
-      match: 'SELECT nombre, hoja_inscripcion FROM examenes',
-      result: () => ({ rows: [{ nombre: 'Examen "Cinta" Áurea 2026/2', hoja_inscripcion: PDF_VALIDO.toString('base64') }] }),
-    },
-  ]);
+  install([PERMISOS_VACIO, ALUMNO, HOJA_DE('Examen "Cinta" Áurea 2026/2')]);
 
   const res = await requestRaw('GET', '/api/examenes/5/hoja', { token: token('estudiante') });
   assert.equal(res.status, 200);
   // Una comilla sin escapar ahi revienta la cabecera entera y la descarga llega
   // sin nombre o con el nombre cortado.
-  assert.equal(res.headers.get('content-disposition'), 'attachment; filename="hoja-inscripcion-examen-cinta-aurea-2026-2.pdf"');
+  assert.equal(res.headers.get('content-disposition'), 'attachment; filename="solicitud-examen-examen-cinta-aurea-2026-2.pdf"');
 });
 
-test('descargar cuando no hay hoja da 404, no un PDF vacio', async () => {
+test('un examen sin hoja guardada sirve la de por defecto, no un 404', async () => {
   await start();
   install([
     PERMISOS_VACIO,
-    { match: 'SELECT nombre, hoja_inscripcion FROM examenes', result: () => ({ rows: [{ nombre: 'X', hoja_inscripcion: null }] }) },
+    ALUMNO,
+    {
+      // Fila vieja: creada antes de que la hoja por defecto existiera, asi que
+      // la columna viene en NULL.
+      match: 'FROM examenes e JOIN examenes_inscripciones ei',
+      result: () => ({ rows: [{ examen_nombre: 'Examen Antiguo', hoja_inscripcion: null }] }),
+    },
   ]);
 
   const res = await requestRaw('GET', '/api/examenes/6/hoja', { token: token('estudiante') });
+  assert.equal(res.status, 200,
+    'el alumno tiene derecho a su hoja aunque el examen se creo sin ella');
+  assert.equal(res.headers.get('content-type'), 'application/pdf');
+});
+
+test('no estando inscrito da 404, sin revelar si el examen existe', async () => {
+  await start();
+  install([PERMISOS_VACIO, ALUMNO, { match: 'FROM examenes e JOIN examenes_inscripciones ei', result: () => ({ rows: [] }) }]);
+
+  const res = await requestRaw('GET', '/api/examenes/8/hoja', { token: token('estudiante') });
   assert.equal(res.status, 404);
+});
+
+test('un alumno sin sesion no descarga la hoja', async () => {
+  await start();
+  install([PERMISOS_VACIO, ALUMNO, HOJA_DE('X')]);
+
+  const res = await requestRaw('GET', '/api/examenes/8/hoja');
+  assert.equal(res.status, 401);
 });
 
 test('quitar la hoja la borra de verdad', async () => {
@@ -1319,12 +1372,4 @@ test('quitar la hoja la borra de verdad', async () => {
 
   const call = calls.find((c) => c.text.includes('UPDATE examenes SET hoja_inscripcion = NULL'));
   assertPlaceholders(call);
-});
-
-test('un alumno sin sesion no descarga la hoja', async () => {
-  await start();
-  install([PERMISOS_VACIO, { match: 'SELECT nombre, hoja_inscripcion FROM examenes', result: () => ({ rows: [] }) }]);
-
-  const res = await requestRaw('GET', '/api/examenes/8/hoja');
-  assert.equal(res.status, 401);
 });
