@@ -298,14 +298,26 @@ test('el alumno se inscribe en un examen programado → 201', async () => {
   const res = await request('POST', '/api/examenes/5/inscribirse', { token: token('estudiante', 3), body: DATOS_INSCRIPCION });
   assert.equal(res.status, 201);
 
-  const insert = calls.find((c) => c.text.includes('INSERT INTO examenes_inscripciones'));
+const insert = calls.find((c) => c.text.includes('INSERT INTO examenes_inscripciones'));
   // parseId normaliza el id de ruta a entero, asi que ya no llega como texto.
   // Los tres primeros son examen, alumno resuelto del token y usuario. Los cinco
   // siguientes son el snapshot que el alumno escribio. El ultimo NO lo escribio:
   // lo impone el servidor con NOMBRE_ESCUELA, porque todos son de AMTKD.
+  //
+  // Los doce ultimos son el bloque de la hoja "SOLICITUD DE EXAMEN". Este test
+  // manda el cuerpo MINIMO (sin ningun campo de la hoja), asi que los doce van en
+  // null: es el caso de una inscripcion vieja o de un cliente que no conoce la
+  // hoja, y tiene que seguir siendo valida.
   assert.deepEqual(
     insert.params,
-    [5, 22, 3, 'Juan Carlos', 'García', 'Hernández', 12, '4to', 'AMTKD'],
+    [
+      5, 22, 3,
+      'Juan Carlos', 'García', 'Hernández', 12, '4to', 'AMTKD',
+      null, null, null,
+      null, null, null,
+      null, null, null,
+      null, null, null,
+    ],
     'el alumno_id se resuelve del token, la escuela la impone el servidor y los datos van en su propio orden'
   );
   assert.ok(calls.some((c) => c.text.includes('FOR UPDATE')), 'el cupo se bloquea con FOR UPDATE');
@@ -557,6 +569,293 @@ test('los datos del snapshot se guardan en el INSERT y al reactivar', async () =
   // PATCH del entrenador.
   assert.ok(update.params.includes('AMTKD'), 'la escuela la impone el servidor tambien al reactivar');
   assertPlaceholders(update);
+});
+
+// --- Hoja "SOLICITUD DE EXAMEN": el bloque del alumno ---
+
+// El bloque completo de la hoja, tal cual lo manda el modal.
+const SOLICITUD = {
+  numero_examen: '7',
+  direccion: 'Calle Reforma 123, Centro, Progreso',
+  telefono: '55 1234 5678',
+  fecha_nacimiento: '2014-03-11',
+  fecha_ingreso: '2019-08-15',
+  grado_a_pasar: '5to',
+  fecha_examen_anterior: '2025-10-20',
+  fecha_ultimo_torneo: '2026-05-09',
+  fecha_solicitud: '2026-09-30',
+  profesor_autoriza: 'Sensei Arturo Ramírez',
+  // Payload inventado pero con la forma que valida el backend: prefijo correcto
+  // y solo base64 despues.
+  firma_solicitante: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+  firma_padre: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+};
+
+test('la hoja se guarda junto con la inscripcion, sin el prefijo de las firmas', async () => {
+  await start();
+  const { calls } = install(handlersInscripcion());
+
+  const res = await request('POST', '/api/examenes/5/inscribirse', {
+    token: token('estudiante', 3),
+    body: { ...DATOS_INSCRIPCION, ...SOLICITUD },
+  });
+  assert.equal(res.status, 201);
+
+  const insert = calls.find((c) => c.text.includes('INSERT INTO examenes_inscripciones'));
+  assertPlaceholders(insert);
+  assert.ok(insert.text.includes('numero_examen'), 'la hoja se inserta, no se guarda aparte');
+
+  // La firma entra SIN el prefijo: el prefijo es constante y solo ocupa espacio en
+  // cada fila. Si se guardara entero habria que hacer slicing a mano al pintar.
+  const indiceFirmaSolicitante = insert.params.indexOf('iVBORw0KGgoAAAANSUhEUg==');
+  assert.ok(indiceFirmaSolicitante > 0, 'el payload de la firma llega al INSERT');
+  assert.equal(
+    insert.params.filter((p) => typeof p === 'string' && p.startsWith('data:')).length,
+    0,
+    'ninguna firma viaja con el prefijo data:'
+  );
+
+  assert.equal(insert.params[9], '7', 'el numero de examen va en su columna');
+  assert.equal(insert.params[12], '2014-03-11', 'la fecha de nacimiento va como YYYY-MM-DD');
+});
+
+// La validacion de fecha NO puede ser `new Date(valor)`: "2026-02-31" tiene la
+// forma correcta y new Date la normaliza en silencio a 3 de marzo, que es una
+// fecha que nadie escribio.
+test('una fecha que no existe se rechaza en vez de normalizarse', async () => {
+  await start();
+  install(handlersInscripcion());
+
+  const res = await request('POST', '/api/examenes/5/inscribirse', {
+    token: token('estudiante', 3),
+    body: { ...DATOS_INSCRIPCION, ...SOLICITUD, fecha_nacimiento: '2026-02-31' },
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.data.message, /fecha de nacimiento/i);
+});
+
+// La lista de prefijos es una lista y no un `startsWith('data:')`. Aceptar
+// cualquier tipo MIME guardaria un `data:text/html` en la base, y el dia que eso
+// se pinte sin escapar seria XSS servido desde la propia API.
+test('una firma que no es imagen se rechaza', async () => {
+  await start();
+  install(handlersInscripcion());
+
+  for (const firma of [
+    'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+    'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+    'javascript:alert(1)',
+  ]) {
+    const res = await request('POST', '/api/examenes/5/inscribirse', {
+      token: token('estudiante', 3),
+      body: { ...DATOS_INSCRIPCION, ...SOLICITUD, firma_solicitante: firma },
+    });
+    assert.equal(res.status, 400, `debe rechazar ${firma.slice(0, 30)}`);
+    assert.match(res.data.message, /firma del solicitante/i);
+  }
+});
+
+// El prefijo correcto no alcanza: despues tiene que haber base64 y nada mas. Con
+// solo validar el prefijo, "data:image/png;base64,<script>alert(1)</script>"
+// pasaria y al volver a ponerlo en un <img> no seria una imagen.
+test('una firma con prefijo valido pero basura dentro se rechaza', async () => {
+  await start();
+  install(handlersInscripcion());
+
+  const res = await request('POST', '/api/examenes/5/inscribirse', {
+    token: token('estudiante', 3),
+    body: {
+      ...DATOS_INSCRIPCION,
+      ...SOLICITUD,
+      firma_solicitante: 'data:image/png;base64,<script>alert(1)</script>',
+    },
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.data.message, /no es una imagen v/i);
+});
+
+// Las firmas viajan en el JSON, y express.json esta en `limit: '1mb'`. Con 300 KB
+// por firma las dos caben con el resto del cuerpo, asi que el 413 de Vercel no
+// puede aparecer. Con el limite viejo (400 KB) este mismo test lo dispara.
+test('el limite de firma deja pasar dos firmas dentro del body de 1mb', async () => {
+  await start();
+  install(handlersInscripcion());
+
+  const grande = 'A'.repeat(300 * 1024);
+  const res = await request('POST', '/api/examenes/5/inscribirse', {
+    token: token('estudiante', 3),
+    body: {
+      ...DATOS_INSCRIPCION,
+      ...SOLICITUD,
+      firma_solicitante: `data:image/png;base64,${grande}`,
+      firma_padre: `data:image/png;base64,${grande}`,
+    },
+  });
+  assert.equal(res.status, 201, 'dos firmas del tamano maximo siguen siendo un body valido');
+});
+
+// Reinscribirse tras cancelar deja el examen SIN CALIFICAR. Las calificaciones
+// que habia eran de la presentacion anterior, y dejarlas pegadas a una inscripcion
+// nueva haria que un alumno saliera con el veredicto de un intento que ya no
+// existe.
+test('reinscribirse borra el bloque de la institucion', async () => {
+  await start();
+  const { calls } = install(handlersInscripcion([
+    { match: 'SELECT id, estado FROM examenes_inscripciones', result: () => ({ rows: [{ id: 9, estado: 'cancelada' }] }) },
+    { match: 'UPDATE examenes_inscripciones SET', result: () => ({ rows: [{ id: 9 }] }) },
+  ]));
+
+  const res = await request('POST', '/api/examenes/5/inscribirse', {
+    token: token('estudiante'),
+    body: { ...DATOS_INSCRIPCION, ...SOLICITUD },
+  });
+  assert.equal(res.status, 200);
+
+  const update = calls.find((c) => c.text.includes('UPDATE examenes_inscripciones SET'));
+  assert.ok(update.text.includes('aprobado = NULL'), 'el veredicto anterior se borra');
+  assert.ok(update.text.includes('calificado_at = NULL'), 'la marca de calificado se borra');
+  assertPlaceholders(update);
+});
+
+// --- Bloque "PARA USO EXCLUSIVO DE LA INSTITUCION" ---
+
+const CALIFICACION = {
+  record_asistencia: 72.5,
+  cal_basicos: 88,
+  cal_rompimientos: 90,
+  cal_pateo: 85,
+  cal_combate_libre: 92,
+  cal_formas: 87,
+  cal_defensa_personal: 89,
+  nota_combate_un_paso: 'Lectura correcta del paso',
+  nota_pateo_saltando: 'Buena altura de salto',
+  comentarios: 'Alumno destacado',
+  aprobado: true,
+  firma_examinador: 'data:image/png;base64,iVBORw0KGgo=',
+};
+
+test('la calificacion se guarda con el examen y la inscripcion que se le pasaron', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_CON(['examenes:editar:examenes']),
+    { match: 'UPDATE examenes_inscripciones', result: () => ({ rows: [{ id: 12, aprobado: true }] }) },
+  ]);
+
+  const res = await request('PUT', '/api/examenes/5/inscritos/12/calificacion', {
+    token: token('profesor'),
+    body: CALIFICACION,
+  });
+  assert.equal(res.status, 200);
+
+  const update = calls.find((c) => c.text.includes('cal_basicos'));
+  assertPlaceholders(update);
+  assert.ok(update.text.includes('examen_id = $2'), 'el filtro de pertenencia es lo que cierra el acceso cruzado');
+  // El orden del UPDATE: $1 inscripcion, $2 examen, $3 record, $4-$9 las seis
+  // areas, $10-$12 las tres notas, $13 el veredicto, $14 la firma. Con indice de
+  // array son 12 y 13 porque el array es de base cero. `assertPlaceholders` arriba
+  // es lo que garantiza que no falte ninguno.
+  assert.equal(update.params[0], 12);
+  assert.equal(update.params[1], 5);
+  assert.equal(update.params[2], 72.5, 'el record llega como numero, no como texto');
+  assert.equal(update.params[12], true, 'el veredicto viaja como booleano');
+  assert.equal(update.params[13], 'iVBORw0KGgo=', 'la firma llega sin el prefijo data:');
+});
+
+// `aprobado` es triestado. Sin esto, un alumno recien inscrito apareceria como
+// reprobado en cualquier reporte que leyera el booleano sin mirar si tiene
+// calificacion.
+test('un alumno sin calificar se guarda con aprobado NULL, no en false', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_CON(['examenes:editar:examenes']),
+    { match: 'UPDATE examenes_inscripciones', result: () => ({ rows: [{ id: 12, aprobado: null }] }) },
+  ]);
+
+  const res = await request('PUT', '/api/examenes/5/inscritos/12/calificacion', {
+    token: token('profesor'),
+    body: { ...CALIFICACION, aprobado: null },
+  });
+  assert.equal(res.status, 200);
+
+  const update = calls.find((c) => c.text.includes('cal_basicos'));
+  assert.equal(update.params[12], null, 'sin calificar es NULL y no false');
+});
+
+// Una nota por encima de 100 no es una nota: es un dedo mal puesto o un payload
+// automatizado. Y un 0 SI es valido, asi que el vacio y el cero no se mezclan.
+test('las calificaciones se validan entre 0 y 100', async () => {
+  await start();
+  install([
+    PERMISOS_CON(['examenes:editar:examenes']),
+    { match: 'UPDATE examenes_inscripciones', result: () => ({ rows: [{ id: 12 }] }) },
+  ]);
+
+  const alta = await request('PUT', '/api/examenes/5/inscritos/12/calificacion', {
+    token: token('profesor'),
+    body: { ...CALIFICACION, cal_basicos: 101 },
+  });
+  assert.equal(alta.status, 400);
+  assert.match(alta.data.message, /básicos/i);
+
+  const texto = await request('PUT', '/api/examenes/5/inscritos/12/calificacion', {
+    token: token('profesor'),
+    body: { ...CALIFICACION, cal_pateo: 'ochenta' },
+  });
+  assert.equal(texto.status, 400);
+
+  const cero = await request('PUT', '/api/examenes/5/inscritos/12/calificacion', {
+    token: token('profesor'),
+    body: { ...CALIFICACION, cal_pateo: 0 },
+  });
+  assert.equal(cero.status, 200, 'un 0 es una nota real, no un campo vacio');
+});
+
+// Calificar es un juicio del entrenador. Si el alumno pudiera llamar esta ruta se
+// aprobaria a si mismo, asi que `editar` y no el permiso de solo ver la lista.
+test('calificar exige editar, no basta con ver la lista de inscritos', async () => {
+  await start();
+  install([
+    PERMISOS_CON(['examenes:ver:reporte_examenes']),
+    { match: 'UPDATE examenes_inscripciones', result: () => ({ rows: [{ id: 12 }] }) },
+  ]);
+
+  const res = await request('PUT', '/api/examenes/5/inscritos/12/calificacion', {
+    token: token('profesor'),
+    body: CALIFICACION,
+  });
+  assert.equal(res.status, 403);
+});
+
+test('un estudiante no puede calificar ni a si mismo', async () => {
+  await start();
+  install([
+    PERMISOS_CON(['examenes:ver:reporte_examenes']),
+    { match: 'UPDATE examenes_inscripciones', result: () => ({ rows: [{ id: 12 }] }) },
+  ]);
+
+  const res = await request('PUT', '/api/examenes/5/inscritos/12/calificacion', {
+    token: token('estudiante', 3),
+    body: CALIFICACION,
+  });
+  assert.equal(res.status, 403);
+});
+
+// El `examen_id = $2` del WHERE no es redundante con el id de la ruta: sin el, un
+// profesor con `editar` pasa el id de una inscripcion de CUALQUIER examen y la
+// califica. El filtro es lo que cierra eso, y 404 es la respuesta correcta para no
+// confirmar siquiera que el id existe.
+test('no se puede calificar una inscripcion de otro examen', async () => {
+  await start();
+  install([
+    PERMISOS_CON(['examenes:editar:examenes']),
+    { match: 'UPDATE examenes_inscripciones', result: () => ({ rows: [] }) },
+  ]);
+
+  const res = await request('PUT', '/api/examenes/5/inscritos/999/calificacion', {
+    token: token('profesor'),
+    body: CALIFICACION,
+  });
+  assert.equal(res.status, 404);
 });
 
 // --- Sede ---

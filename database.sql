@@ -373,8 +373,60 @@ CREATE TABLE IF NOT EXISTS examenes_inscripciones (
   edad SMALLINT,
   grado VARCHAR(50) NOT NULL,
   escuela VARCHAR(150) NOT NULL,
+  -- Bloque del alumno de la hoja "SOLICITUD DE EXAMEN". Los cinco campos que la
+  -- hoja pide y aqui ya tenian (nombre, apellidos, edad, grado, escuela) se
+  -- reutilizan los de arriba en vez de duplicarlos. Ver MIGRACION_SOLICITUD_EXAMEN.sql
+  -- para el detalle de por que las firmas van sin el prefijo "data:".
+  numero_examen VARCHAR(50),
+  direccion VARCHAR(255),
+  telefono VARCHAR(30),
+  fecha_nacimiento DATE,
+  fecha_ingreso DATE,
+  grado_a_pasar VARCHAR(50),
+  fecha_examen_anterior DATE,
+  fecha_ultimo_torneo DATE,
+  fecha_solicitud DATE,
+  profesor_autoriza VARCHAR(255),
+  firma_solicitante TEXT,
+  firma_padre TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Las mismas columnas del bloque del alumno, pero para una base que YA existia:
+-- el CREATE TABLE de arriba no corre si la tabla esta creada. Idempotente.
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS numero_examen VARCHAR(50);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS direccion VARCHAR(255);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS telefono VARCHAR(30);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS fecha_nacimiento DATE;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS fecha_ingreso DATE;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS grado_a_pasar VARCHAR(50);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS fecha_examen_anterior DATE;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS fecha_ultimo_torneo DATE;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS fecha_solicitud DATE;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS profesor_autoriza VARCHAR(255);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS firma_solicitante TEXT;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS firma_padre TEXT;
+
+-- Bloque "PARA USO EXCLUSIVO DE LA INSTITUCION". Lo llena la academia DESPUES del
+-- examen, asi que nace en NULL: NULL = sin calificar, que no es lo mismo que
+-- reprobado. `aprobado` es BOOLEAN nullable por eso, no NOT NULL DEFAULT false.
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS record_asistencia NUMERIC(5, 2);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS cal_basicos NUMERIC(5, 2);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS cal_rompimientos NUMERIC(5, 2);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS cal_pateo NUMERIC(5, 2);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS cal_combate_libre NUMERIC(5, 2);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS cal_formas NUMERIC(5, 2);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS cal_defensa_personal NUMERIC(5, 2);
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS nota_combate_un_paso TEXT;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS nota_pateo_saltando TEXT;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS comentarios TEXT;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS aprobado BOOLEAN;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS firma_examinador TEXT;
+ALTER TABLE examenes_inscripciones ADD COLUMN IF NOT EXISTS calificado_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS examenes_inscripciones_calificado_idx
+  ON examenes_inscripciones (examen_id)
+  WHERE aprobado IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS examenes_inscripciones_unica
   ON examenes_inscripciones (examen_id, alumno_id);

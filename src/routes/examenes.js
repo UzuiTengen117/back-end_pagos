@@ -1,4 +1,5 @@
-﻿const express = require('express');
+const express = require('express');
+const { PDFDocument } = require('pdf-lib');
 const router = express.Router();
 const multer = require('multer');
 const pool = require('../config/database');
@@ -31,6 +32,39 @@ const MAX_PRECIO = 99999999.99;
 // mal puesto o un payload automatizado.
 const EDAD_MIN = 4;
 const EDAD_MAX = 99;
+
+// ---------------------------------------------------------------------------
+// Limites de la hoja "SOLICITUD DE EXAMEN"
+// ---------------------------------------------------------------------------
+const MAX_DIRECCION = 255;
+const MAX_TELEFONO = 30;
+const MAX_NUMERO_EXAMEN = 50;
+const MAX_PROFESOR = 255;
+
+// Una firma dibujada a 600x150 en PNG ocupa 6-14 KB.
+//
+// El tope de 300 KB esta elegido por el limite de la puerta, no por la firma: la
+// firma viaja DENTRO del JSON de la inscripcion y `express.json` esta en
+// `limit: '1mb'`. Con 300 KB por firma, las dos (solicitante y padre) mas todo el
+// resto del cuerpo quedan en 600 KB y el 413 de Vercel no puede aparecer.
+//
+// Ademas este 400 -> 300 no es cosmetico: con 400 KB por firma, dos firmas ya
+// son 800 KB y el request pasaria el limite de Express ANTES de que este
+// validador corra, porque el body se parsea primero. El usuario veria un 413 sin
+// mensaje en vez del error de espanol que hay dos lineas mas abajo.
+const MAX_FIRMA = 300 * 1024;
+
+// Solo estos dos prefijos. La lista es una LISTA, no un "que empiece por data:":
+// si admitiera cualquier tipo MIME, alguien podria guardar un data:text/html y
+// el dia que eso se renderice sin escapar seria XSS. El prefijo se valida aqui
+// y se guarda solo el payload.
+const PREFIJOS_FIRMA = ['data:image/png;base64,', 'data:image/jpeg;base64,'];
+
+// Una calificacion de taekwondo va de 0 a 100. Se corta ahi y no mas arriba
+// porque por encima de 100 no existe nada que un examinador pueda querer decir.
+const CALIFICACION_MIN = 0;
+const CALIFICACION_MAX = 100;
+const MAX_NOTAS = 2000;
 
 // Mismo limite que la foto de perfil. El despliegue es serverless y no hay
 // disco: la imagen viaja como data URL dentro de la fila.
@@ -111,7 +145,16 @@ const SELECT_EXAMEN = `
 const SELECT_INSCRITOS_EXAMEN = `
   SELECT ei.id, ei.alumno_id, ei.estado, ei.created_at,
          ei.nombre, ei.primer_apellido, ei.segundo_apellido,
-         ei.edad, ei.grado, ei.escuela
+         ei.edad, ei.grado, ei.escuela,
+         ei.numero_examen, ei.direccion, ei.telefono,
+         ei.fecha_nacimiento, ei.fecha_ingreso, ei.grado_a_pasar,
+         ei.fecha_examen_anterior, ei.fecha_ultimo_torneo, ei.fecha_solicitud,
+         ei.profesor_autoriza, ei.firma_solicitante, ei.firma_padre,
+         ei.record_asistencia,
+         ei.cal_basicos, ei.cal_rompimientos, ei.cal_pateo,
+         ei.cal_combate_libre, ei.cal_formas, ei.cal_defensa_personal,
+         ei.nota_combate_un_paso, ei.nota_pateo_saltando, ei.comentarios,
+         ei.aprobado, ei.firma_examinador, ei.calificado_at
     FROM examenes_inscripciones ei
    WHERE ei.examen_id = $1 AND ei.estado = 'inscrito'
    ORDER BY ei.primer_apellido ASC, ei.nombre ASC
@@ -358,6 +401,207 @@ function construirDatosInscripcion(body, opciones = {}) {
   };
 }
 
+// Una fecha de la hoja llega como "YYYY-MM-DD" desde un <input type="date">.
+//
+// Se valida el FORMATO y no se convierte con new Date(): "2026-02-31" es un
+// texto con la forma correcta y new Date lo normaliza a 3 de marzo en silencio,
+// que es una fecha que nadie escribio. Postgres si lo rechazaria (22008), pero
+// eso llega como 500 y el mensaje no le dice nada al alumno.
+function fechaISO(value, campo) {
+  if (value === null || value === undefined || value === '') {
+    return { valor: null };
+  }
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return { error: `${campo} no es una fecha válida` };
+  }
+  // Se reconstruye la fecha en UTC y se comparan las tres piezas: es la forma de
+  // comprobar que el dia existe sin depender de la zona horaria del server, que
+  // en Vercel es UTC pero en local puede no serlo.
+  const [anio, mes, dia] = value.split('-').map(Number);
+  const fecha = new Date(Date.UTC(anio, mes - 1, dia));
+  if (fecha.getUTCFullYear() !== anio
+    || fecha.getUTCMonth() !== mes - 1
+    || fecha.getUTCDate() !== dia) {
+    return { error: `${campo} no es una fecha válida` };
+  }
+  return { valor: value };
+}
+
+// Valida el bloque del ALUMNO de la hoja.
+//
+// Se separa de `construirDatosInscripcion` a proposito: los seis campos de
+// identidad son obligatorios para CUALQUIER inscripcion (tambien la de un
+// evento, que no tiene hoja), y los de la hoja solo aplican a examenes. Meterlos
+// en la misma funcion obligaria a los eventos a mandar campos que no tienen.
+//
+// Devuelve { valores } con TODO en null cuando no vino nada: una inscripcion
+// vieja sin hoja sigue siendo valida, solo que con las columnas del bloque en
+// NULL, que es exactamente lo que dice la migracion.
+function construirSolicitudExamen(body) {
+  const v = {};
+
+  const numeroExamen = texto(body.numero_examen, MAX_NUMERO_EXAMEN, 'El número de examen');
+  if (numeroExamen.error) return numeroExamen;
+  v.numero_examen = numeroExamen.valor;
+
+  const direccion = texto(body.direccion, MAX_DIRECCION, 'La dirección');
+  if (direccion.error) return direccion;
+  v.direccion = direccion.valor;
+
+  const telefono = texto(body.telefono, MAX_TELEFONO, 'El teléfono');
+  if (telefono.error) return telefono;
+  v.telefono = telefono.valor;
+
+  const fechaNacimiento = fechaISO(body.fecha_nacimiento, 'La fecha de nacimiento');
+  if (fechaNacimiento.error) return fechaNacimiento;
+  v.fecha_nacimiento = fechaNacimiento.valor;
+
+  const fechaIngreso = fechaISO(body.fecha_ingreso, 'La fecha de ingreso');
+  if (fechaIngreso.error) return fechaIngreso;
+  v.fecha_ingreso = fechaIngreso.valor;
+
+  const gradoPasar = texto(body.grado_a_pasar, MAX_GRADO, 'El grado a pasar');
+  if (gradoPasar.error) return gradoPasar;
+  v.grado_a_pasar = gradoPasar.valor;
+
+  const examenAnterior = fechaISO(body.fecha_examen_anterior, 'La fecha del examen anterior');
+  if (examenAnterior.error) return examenAnterior;
+  v.fecha_examen_anterior = examenAnterior.valor;
+
+  const ultimoTorneo = fechaISO(body.fecha_ultimo_torneo, 'La fecha del último torneo');
+  if (ultimoTorneo.error) return ultimoTorneo;
+  v.fecha_ultimo_torneo = ultimoTorneo.valor;
+
+  const fechaSolicitud = fechaISO(body.fecha_solicitud, 'La fecha de la solicitud');
+  if (fechaSolicitud.error) return fechaSolicitud;
+  // La hoja trae una linea "FECHA ______" suelta. Si no se escribe, se usa el dia
+  // en que se confirmo la inscripcion (que es lo que ya guarda created_at), para
+  // que la hoja impresa nunca salga con un hueco sin explicar.
+  v.fecha_solicitud = fechaSolicitud.valor;
+
+  const profesor = texto(body.profesor_autoriza, MAX_PROFESOR, 'El nombre del profesor que autoriza');
+  if (profesor.error) return profesor;
+  v.profesor_autoriza = profesor.valor;
+
+  const firmaSolicitante = firma(body.firma_solicitante, 'La firma del solicitante');
+  if (firmaSolicitante.error) return firmaSolicitante;
+  v.firma_solicitante = firmaSolicitante.valor;
+
+  const firmaPadre = firma(body.firma_padre, 'La firma del padre');
+  if (firmaPadre.error) return firmaPadre;
+  v.firma_padre = firmaPadre.valor;
+
+  return { valores: v };
+}
+
+// Una firma llega como data URL completa y se guarda SIN el prefijo: el prefijo es
+// constante, ocupa espacio en cada fila y no aporta nada al dato. Quien la lea
+// vuelve a anteponerlo antes de ponerla en un <img>.
+//
+// Vacio significa NULL (no firmado). No se distingue "no firmado" de "firmado en
+// blanco" porque en la hoja en papel tampoco se distinguiria.
+function firma(value, campo) {
+  if (value === null || value === undefined || value === '') {
+    return { valor: null };
+  }
+  if (typeof value !== 'string') {
+    return { error: `${campo} no tiene un formato válido` };
+  }
+  const prefijo = PREFIJOS_FIRMA.find((p) => value.startsWith(p));
+  if (!prefijo) {
+    return { error: `${campo} debe ser una imagen PNG o JPG` };
+  }
+  const payload = value.slice(prefijo.length);
+  if (payload.length === 0) {
+    return { error: `${campo} está vacía` };
+  }
+  // El limite mide el PAYLOAD, que es lo que se guarda y ocupa fila. Medir la data
+  // URL entera descontaria de cada firma los 22 bytes del prefijo, que es
+  // justamente lo que no se guarda.
+  if (payload.length > MAX_FIRMA) {
+    return { error: `${campo} es demasiado grande` };
+  }
+  // Solo alfabetico base64. Sin esto, un "data:image/png;base64," seguido de
+  // cualquier texto pasaria y al volver a pintarse en un <img> no seria una
+  // imagen. El charset es la unica parte que no se puede dejar al backend.
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) {
+    return { error: `${campo} tiene un contenido que no es una imagen válida` };
+  }
+  return { valor: payload };
+}
+
+// Bloque "PARA USO EXCLUSIVO DE LA INSTITUCION". Lo escribe el entrenador con
+// `editar:examenes`, nunca el alumno.
+//
+// `aprobado` se distingue en tres estados y por eso NO es booleano a secas:
+// undefined -> sin calificar (NULL), true -> aprobado, false -> reprobado. Un
+// `false` que significara "todavia no" haria que todo alumno recien inscrito
+// saliera reprobado en cualquier reporte.
+function construirCalificacionExamen(body) {
+  const v = {};
+
+  const areas = [
+    ['record_asistencia', 'El récord de asistencia'],
+    ['cal_basicos', 'La calificación de básicos'],
+    ['cal_rompimientos', 'La calificación de rompimientos'],
+    ['cal_pateo', 'La calificación de pateo'],
+    ['cal_combate_libre', 'La calificación de combate libre'],
+    ['cal_formas', 'La calificación de formas'],
+    ['cal_defensa_personal', 'La calificación de defensa personal'],
+  ];
+
+  for (const [campo, etiqueta] of areas) {
+    const r = nota(body[campo], etiqueta);
+    if (r.error) return r;
+    v[campo] = r.valor;
+  }
+
+  const notas = [
+    ['nota_combate_un_paso', 'La nota de combate un paso'],
+    ['nota_pateo_saltando', 'La nota de pateo saltando'],
+    ['comentarios', 'Los comentarios generales'],
+  ];
+
+  for (const [campo, etiqueta] of notas) {
+    const r = texto(body[campo], MAX_NOTAS, etiqueta);
+    if (r.error) return r;
+    v[campo] = r.valor;
+  }
+
+  // El veredicto es triestado. Se lee con 'aprobado' en el body para no chocar
+  // con el nombre del modulo de permisos, que tambien se llama aprobado.
+  if (body.aprobado === true || body.aprobado === 'true' || body.aprobado === 1) {
+    v.aprobado = true;
+  } else if (body.aprobado === false || body.aprobado === 'false' || body.aprobado === 0) {
+    v.aprobado = false;
+  } else {
+    v.aprobado = null;
+  }
+
+  const firmaExaminador = firma(body.firma_examinador, 'La firma del examinador');
+  if (firmaExaminador.error) return firmaExaminador;
+  v.firma_examinador = firmaExaminador.valor;
+
+  return { valores: v };
+}
+
+// Una nota es un decimal opcional en 0-100. Viene como string desde el input, y
+// "" significa "el examinador no la puso todavia" y NO es cero: un 0 es una nota
+// real (el alumno no романzo nada).
+function nota(value, etiqueta) {
+  if (value === null || value === undefined || value === '') {
+    return { valor: null };
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return { error: `${etiqueta} debe ser un número` };
+  }
+  if (n < CALIFICACION_MIN || n > CALIFICACION_MAX) {
+    return { error: `${etiqueta} debe estar entre ${CALIFICACION_MIN} y ${CALIFICACION_MAX}` };
+  }
+  return { valor: n };
+}
+
 // Ruta principal del listado. El alias /ver se mantiene solo en lectura, como
 // en el resto del repo: duplicar un GET no abre superficie de permisos porque
 // ninguno lleva `permite`.
@@ -463,6 +707,67 @@ router.patch('/:id/inscritos/:inscripcionId', permite('examenes', 'editar:examen
         RETURNING *`,
       [inscripcionId, id, d.valores.nombre, d.valores.primer_apellido,
        d.valores.segundo_apellido, d.valores.edad, d.valores.grado, d.valores.escuela]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'La inscripción no pertenece a este examen' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
+// Llenar el bloque "PARA USO EXCLUSIVO DE LA INSTITUCION" de UNA inscripcion:
+// record de asistencia, las seis areas, las notas de combate un paso y pateo
+// saltando, comentarios, el veredicto y la firma del examinador.
+//
+// Ruta aparte de la de correccion de identidad y NO por la misma razon de permiso:
+// la de identidad escribe datos que el ALUMNO capturo, asi que tambien la puede
+// usar el propio alumno para arreglar un error suyo (ver la nota del endpoint
+// PATCH de arriba). Esta escribe la calificacion, que es un juicio del
+// entrenador, y si el alumno pudiera llamarla se aprobaría a sí mismo.
+//
+// Por eso exige `editar:examenes` y nunca `ver:reporte_examenes`: ver la lista es
+// consultar; poner un veredicto es escribir.
+router.put('/:id/inscritos/:inscripcionId/calificacion', permite('examenes', 'editar:examenes'), async (req, res) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ message: 'examen no encontrado' });
+    }
+    const inscripcionId = parseId(req.params.inscripcionId);
+    if (inscripcionId === null) {
+      return res.status(400).json({ message: 'Inscripción inválida' });
+    }
+
+    const c = construirCalificacionExamen(req.body);
+    if (c.error) {
+      return res.status(400).json({ message: c.error });
+    }
+    const v = c.valores;
+
+    // Mismo filtro de pertenencia que la correccion: sin `examen_id = $1`, un
+    // profesor con `editar` podria pasar el id de una inscripcion de otro examen
+    // y calificarlo. Y `estado = 'inscrito'` evita calificar una inscripcion que
+    // el alumno cancelo: en la hoja impresa no aparece, y calificar algo invisible
+    // es un dato que nadie va a leer ni a corregir.
+    const result = await pool.query(
+      `UPDATE examenes_inscripciones
+          SET record_asistencia = $3,
+              cal_basicos = $4, cal_rompimientos = $5, cal_pateo = $6,
+              cal_combate_libre = $7, cal_formas = $8, cal_defensa_personal = $9,
+              nota_combate_un_paso = $10, nota_pateo_saltando = $11,
+              comentarios = $12,
+              aprobado = $13, firma_examinador = $14,
+              calificado_at = NOW()
+        WHERE id = $1 AND examen_id = $2 AND estado = 'inscrito'
+        RETURNING *`,
+      [inscripcionId, id, v.record_asistencia, v.cal_basicos, v.cal_rompimientos,
+       v.cal_pateo, v.cal_combate_libre, v.cal_formas, v.cal_defensa_personal,
+       v.nota_combate_un_paso, v.nota_pateo_saltando, v.comentarios,
+       v.aprobado, v.firma_examinador]
     );
 
     if (result.rows.length === 0) {
@@ -632,39 +937,59 @@ router.delete('/:id/hoja', permite('examenes', 'editar:examenes'), async (req, r
 router.get('/:id/hoja', async (req, res) => {
   try {
     const id = parseId(req.params.id);
-    if (id === null) {
-      return res.status(404).json({ message: 'examen no encontrado' });
-    }
+    if (id === null) return res.status(404).json({ message: 'examen no encontrado' });
 
+    const alumnoId = await obtenerAlumno(req.user.id);
+    if (alumnoId === null) return res.status(404).json({ message: 'No se encontró tu registro de alumno' });
+
+    // Usa el snapshot de ESTA inscripción; el navegador no manda datos que pudieran rellenar una solicitud ajena.
     const result = await pool.query(
-      'SELECT nombre, hoja_inscripcion FROM examenes WHERE id = $1',
-      [id]
+      'SELECT e.nombre AS examen_nombre, e.hoja_inscripcion, ei.* FROM examenes e JOIN examenes_inscripciones ei ON ei.examen_id = e.id AND ei.alumno_id = $2 AND ei.estado = \'inscrito\' WHERE e.id = $1',
+      [id, alumnoId]
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'examen no encontrado' });
+    if (result.rows.length === 0) return res.status(404).json({ message: 'No estás inscrito en este examen' });
+
+    const inscripcion = result.rows[0];
+    const { examen_nombre, hoja_inscripcion } = inscripcion;
+    if (!hoja_inscripcion) return res.status(404).json({ message: 'Este examen no tiene hoja de inscripción' });
+
+    const nombreSeguro = String(examen_nombre).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 60) || 'examen';
+    const nombreArchivo = 'solicitud-examen-' + nombreSeguro + '.pdf';
+    const pdf = await PDFDocument.load(Buffer.from(hoja_inscripcion, 'base64'));
+    const formulario = pdf.getForm();
+    const fechaPDF = valor => valor instanceof Date ? valor.toISOString().slice(0, 10) : valor ? String(valor).slice(0, 10) : valor;
+    const valores = {
+      'NO. DE EXAMEN': inscripcion.numero_examen,
+      NOMBRE: [inscripcion.nombre, inscripcion.primer_apellido, inscripcion.segundo_apellido].filter(Boolean).join(' '),
+      EDAD: inscripcion.edad,
+      'DIRECCIÓN': inscripcion.direccion,
+      DIRECCION: inscripcion.direccion,
+      'TELÉFONO': inscripcion.telefono,
+      TELEFONO: inscripcion.telefono,
+      'FECHA DE NACIMIENTO': fechaPDF(inscripcion.fecha_nacimiento),
+      'GRADO ACTUAL': inscripcion.grado,
+      'FECHA DE INGRESO': fechaPDF(inscripcion.fecha_ingreso),
+      'GRADO A PASAR': inscripcion.grado_a_pasar,
+      'FECHA DE EXAMEN ANTERIOR APROBADO': fechaPDF(inscripcion.fecha_examen_anterior),
+      'FECHA DE PARTICIPACIÓN DEL ÚLTIMO TORNEO': fechaPDF(inscripcion.fecha_ultimo_torneo),
+      'FECHA DE PARTICIPACION DEL ULTIMO TORNEO': fechaPDF(inscripcion.fecha_ultimo_torneo),
+      'FECHA EXAMEN': fechaPDF(inscripcion.fecha_solicitud),
+      ESCUELA: inscripcion.escuela,
+      PROFESOR: inscripcion.profesor_autoriza,
+    };
+    // Rellena solo los campos presentes y deja el documento editable para que el alumno lo revise antes de firmarlo.
+    const campos = new Map(formulario.getFields().map(campo => [campo.getName(), campo]));
+    for (const [etiqueta, valor] of Object.entries(valores)) {
+      if (valor === null || valor === undefined || String(valor).trim() === '') continue;
+      const campo = campos.get(etiqueta);
+      if (campo && typeof campo.setText === 'function') campo.setText(String(valor));
     }
 
-    const { nombre, hoja_inscripcion } = result.rows[0];
-    if (!hoja_inscripcion) {
-      return res.status(404).json({ message: 'Este examen no tiene hoja de inscripción' });
-    }
-
-    // El nombre del examen va dentro de Content-Disposition, que es una cabecera
-    // y no un valor JSON: un nombre con comillas, salto de linea o acentos raro
-    // rompe la cabecera y el navegador descarga un archivo sin nombre. Se
-    // deja solo lo seguro y se ofrece en ASCII.
-    const nombreArchivo = `hoja-inscripcion-${String(nombre)
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^A-Za-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase()
-      .slice(0, 60) || 'examen'}.pdf`;
-
+    const pdfRellenado = Buffer.from(await pdf.save());
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo}"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="' + nombreArchivo + '"');
     res.setHeader('Cache-Control', 'private, no-store');
-    res.send(Buffer.from(hoja_inscripcion, 'base64'));
+    res.send(pdfRellenado);
   } catch (error) {
     internalError(res, error);
   }
@@ -750,6 +1075,14 @@ router.post('/:id/inscribirse', async (req, res) => {
       return res.status(400).json({ message: datos.error });
     }
 
+    // El bloque de la hoja se valida aparte y en el mismo sitio, para que un
+    // campo mal escrito en cualquiera de los dos salga como 400 con el mensaje
+    // exacto y no a medias: la identidad guardada y la hoja sin validar.
+    const solicitud = construirSolicitudExamen(req.body);
+    if (solicitud.error) {
+      return res.status(400).json({ message: solicitud.error });
+    }
+
     // Todo el alta ocurre en una transaccion con FOR UPDATE sobre la fila del
     // examen. Sin el bloqueo, dos alumnos que tocan "Inscribirme" a la vez
     // cuentan el mismo cupo y ambos insertan, y el ultimo lugar se vende dos
@@ -807,34 +1140,71 @@ router.post('/:id/inscribirse', async (req, res) => {
         }
       }
 
-      // Los datos se piden SIEMPRE, incluso si la fila ya existe: al
+// Los datos se piden SIEMPRE, incluso si la fila ya existe: al
       // reactivarse una inscripcion cancelada, el alumno puede querer
       // corregir su escuela o su grado, y el snapshot debe reflejar lo que
-      // mando en esta occasion.
+      // mando en esta ocasion.
       const d = datos.valores;
+      const s = solicitud.valores;
 
       let guardada;
       if (existente.rows.length > 0) {
         // Reinscribirse tras cancelar reactiva la fila. Un segundo INSERT
         // chocaria con el indice unico.
+        //
+        // El bloque de la institucion NO se toca: si el entrenador ya habia
+        // calificado este examen y el alumno se reinscribe, las calificaciones
+        // siguen siendo las de la vez anterior y no se pueden quedar pegadas a
+        // una inscripcion nueva. Por eso el UPDATE solo lista las columnas del
+        // alumno, y no un `SET` de toda la fila.
         const reactivada = await client.query(
           `UPDATE examenes_inscripciones SET
              estado = 'inscrito', created_at = NOW(),
              nombre = $2, primer_apellido = $3, segundo_apellido = $4,
-             edad = $5, grado = $6, escuela = $7
+             edad = $5, grado = $6, escuela = $7,
+             numero_examen = $8, direccion = $9, telefono = $10,
+             fecha_nacimiento = $11, fecha_ingreso = $12, grado_a_pasar = $13,
+             fecha_examen_anterior = $14, fecha_ultimo_torneo = $15,
+             fecha_solicitud = COALESCE($16, NOW())::date,
+             profesor_autoriza = $17,
+             firma_solicitante = $18, firma_padre = $19,
+             -- Volver a inscribirse deja el examen sin calificar otra vez: lo
+             -- que se califico fue la presentacion anterior.
+             record_asistencia = NULL, cal_basicos = NULL, cal_rompimientos = NULL,
+             cal_pateo = NULL, cal_combate_libre = NULL, cal_formas = NULL,
+             cal_defensa_personal = NULL, nota_combate_un_paso = NULL,
+             nota_pateo_saltando = NULL, comentarios = NULL,
+             aprobado = NULL, firma_examinador = NULL, calificado_at = NULL
            WHERE id = $1 RETURNING *`,
           [existente.rows[0].id, d.nombre, d.primer_apellido, d.segundo_apellido,
-           d.edad, d.grado, d.escuela]
+           d.edad, d.grado, d.escuela,
+           s.numero_examen, s.direccion, s.telefono,
+           s.fecha_nacimiento, s.fecha_ingreso, s.grado_a_pasar,
+           s.fecha_examen_anterior, s.fecha_ultimo_torneo, s.fecha_solicitud,
+           s.profesor_autoriza, s.firma_solicitante, s.firma_padre]
         );
         guardada = reactivada.rows[0];
       } else {
         const creada = await client.query(
           `INSERT INTO examenes_inscripciones
              (examen_id, alumno_id, usuario_id,
-              nombre, primer_apellido, segundo_apellido, edad, grado, escuela)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+              nombre, primer_apellido, segundo_apellido, edad, grado, escuela,
+              numero_examen, direccion, telefono,
+              fecha_nacimiento, fecha_ingreso, grado_a_pasar,
+              fecha_examen_anterior, fecha_ultimo_torneo, fecha_solicitud,
+              profesor_autoriza, firma_solicitante, firma_padre)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                   $10, $11, $12,
+                   $13, $14, $15,
+                   $16, $17, COALESCE($18, NOW())::date,
+                   $19, $20, $21)
+           RETURNING *`,
           [id, alumnoId, req.user.id,
-           d.nombre, d.primer_apellido, d.segundo_apellido, d.edad, d.grado, d.escuela]
+           d.nombre, d.primer_apellido, d.segundo_apellido, d.edad, d.grado, d.escuela,
+           s.numero_examen, s.direccion, s.telefono,
+           s.fecha_nacimiento, s.fecha_ingreso, s.grado_a_pasar,
+           s.fecha_examen_anterior, s.fecha_ultimo_torneo, s.fecha_solicitud,
+           s.profesor_autoriza, s.firma_solicitante, s.firma_padre]
         );
         guardada = creada.rows[0];
       }
