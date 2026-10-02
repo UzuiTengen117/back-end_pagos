@@ -640,6 +640,54 @@ router.get('/ver/:id', async (req, res) => {
   }
 });
 
+// Resultados del ALUMNO: sus propios exámenes, con sus notas, veredicto y
+// observaciones. Es la vista de "cómo me fue", y lafills sola fila del usuario
+// que pregunta.
+//
+// Existe separada de `/:id/inscritos` por una razón que no es de estilo: esa
+// ruta exige `ver:reporte_examenes` y devuelve TODOS los inscritos del examen,
+// con nombre, escuela y notas de todos. Dársela al alumno y filtrar en el
+// cliente no protege nada: los datos ajenos ya llegaron al navegador. Esta ruta
+// no lleva `permite` porque no hay nada que autorizar uno por uno — el WHERE se
+// arma con `usuario_id = req.user.id`, que es la sesión, no un parámetro — y sí
+// filtra con `aprobado IS NOT NULL` para no venderle al alumno un veredicto que
+// el entrenador todavía no ha puesto.
+//
+// `aprobado`, no `calificado_at`: la columna es BOOLEAN nullable y `aprobado IS
+// NOT NULL` es justo "tiene veredicto". `calificado_at` marca el ultimo PUT, y
+// un alumno que se reinscribió tiene la fila con notas borradas pero el timestamp
+// viejo (ver el reinicio de calificaciones en la ruta de darse de baja), asi
+// que filtrar por ahi le enseñaría una hoja vacía como si fuera su resultado.
+//
+// Va antes de `/:id/inscritos` por el orden en que Express evalúa: si se
+// declarara despues, "/mis-resultados" caeria en el `/:id` de esa ruta y
+// `parseId` respondería 404 sin llegar aqui.
+router.get('/mis-resultados', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT e.id AS examen_id, e.nombre AS examen_nombre,
+              e.fecha_examen, e.sede, e.lugar, e.niveles, e.estado AS examen_estado,
+              ei.id AS inscripcion_id,
+              ei.record_asistencia, ei.cal_basicos, ei.cal_rompimientos,
+              ei.cal_pateo, ei.cal_combate_libre, ei.cal_formas,
+              ei.cal_defensa_personal, ei.aprobado,
+              ei.nota_combate_un_paso, ei.nota_pateo_saltando,
+              ei.comentarios, ei.firma_examinador,
+              ei.calificado_at
+         FROM examenes_inscripciones ei
+         JOIN examenes e ON e.id = ei.examen_id
+        WHERE ei.usuario_id = $1
+          AND ei.estado = 'inscrito'
+          AND ei.aprobado IS NOT NULL
+        ORDER BY e.fecha_examen DESC`,
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
 router.get('/:id/inscritos', permite('examenes', 'ver:reporte_examenes'), async (req, res) => {
   try {
     const id = parseId(req.params.id);

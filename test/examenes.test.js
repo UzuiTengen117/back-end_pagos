@@ -879,7 +879,95 @@ test('no se puede calificar una inscripcion de otro examen', async () => {
   assert.equal(res.status, 404);
 });
 
+// --- Resultados del alumno (/mis-resultados) ---
+
+// El alumno ve SUS resultados. La autorizacion no es un permiso: es el WHERE
+// armado con `usuario_id = req.user.id`, que sale del token. Por eso el test
+// mira el parametro que llego, no solo el status: un 200 con el id equivocado
+// seria una fuga de datos ajenos y pasaria igual.
+test('mis-resultados devuelve solo las filas del usuario del token', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'FROM examenes_inscripciones ei', result: () => ({ rows: [] }) },
+  ]);
+
+  const res = await request('GET', '/api/examenes/mis-resultados', { token: token('estudiante', 3) });
+  assert.equal(res.status, 200);
+
+  const select = calls.find((c) => c.text.includes('FROM examenes_inscripciones ei'));
+  assert.ok(select, 'la ruta debe consultar examenes_inscripciones');
+  assert.ok(select.text.includes('ei.usuario_id = $1'), 'filtra por el usuario de la sesion');
+  assert.equal(select.params[0], 3, 'el id sale del token, no de un parametro del request');
+  assertPlaceholders(select);
+});
+
+// Un alumno sin `ver:reporte_examenes` (que es el default del rol estudiante) tiene
+// que poder ver SUS notas. Si esta ruta exigiera ese permiso, caeria en el mismo
+// 403 que la lista de inscritos y la pantalla nueva no serviria para nadie.
+test('mis-resultados no exige ver:reporte_examenes', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: 'FROM examenes_inscripciones ei', result: () => ({ rows: [] }) },
+  ]);
+
+  const res = await request('GET', '/api/examenes/mis-resultados', { token: token('estudiante', 3) });
+  assert.equal(res.status, 200, 'un estudiante sin permisos de reporte ve sus propios resultados');
+});
+
+// Solo los exámenes con veredicto. Un alumno inscrito que todavía no fue
+// calificado no debe ver una hoja vacía presentada como si fuera su resultado:
+// `aprobado IS NOT NULL` es "tiene veredicto", y `calificado_at` NO sirve
+// porque un alumno que se reinscribió conserva el timestamp viejo con las notas
+// ya borradas.
+test('mis-resultados filtra por aprobado, no por calificado_at', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'FROM examenes_inscripciones ei', result: () => ({ rows: [] }) },
+  ]);
+
+  await request('GET', '/api/examenes/mis-resultados', { token: token('estudiante', 3) });
+
+  const select = calls.find((c) => c.text.includes('FROM examenes_inscripciones ei'));
+  assert.ok(select.text.includes('ei.aprobado IS NOT NULL'), 'solo los que tienen veredicto');
+  assert.ok(
+    !select.text.includes('ei.calificado_at IS NOT NULL'),
+    'calificado_at marca el ultimo PUT, no "tiene veredicto"'
+  );
+  assert.ok(select.text.includes("ei.estado = 'inscrito'"), 'una inscripcion cancelada no sale');
+});
+
+// Sin token no hay usuario del que armar el WHERE, asi que 401. Si cayera en el
+// 403 del permiso, el mensaje le diria al alumno que le falta un permiso que si
+// tiene.
+test('mis-resultados exige sesion', async () => {
+  await start();
+  install([PERMISOS_VACIO]);
+
+  const res = await request('GET', '/api/examenes/mis-resultados');
+  assert.equal(res.status, 401);
+});
+
+// La ruta esta declarada ANTES de `/:id/inscritos`. Si se moviera despues,
+// Express evaluaria `/mis-resultados` contra el `/:id` de esa ruta, `parseId`
+// recibiria "mis-resultados" y responderia 404 sin llegar al handler: el endpoint
+// existiria en el codigo y devolveria 404 en produccion.
+test('mis-resultados no cae en el :id de la ruta de inscritos', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'FROM examenes_inscripciones ei', result: () => ({ rows: [] }) },
+  ]);
+
+  const res = await request('GET', '/api/examenes/mis-resultados', { token: token('estudiante', 3) });
+  assert.equal(res.status, 200, 'llego al handler, no al parseId de /:id/inscritos');
+  assert.ok(calls.some((c) => c.text.includes('FROM examenes_inscripciones ei')));
+});
+
 // --- Sede ---
+
 
 // La sede es una lista cerrada de las dos sedes de la academia, validada en el
 // backend y no solo en el <select>: sin esto un POST crudo metería una sede que
