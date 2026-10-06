@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS pedidos (
   notas TEXT,
   metodo_pago VARCHAR(20) NOT NULL DEFAULT 'efectivo'
     CHECK (metodo_pago IN ('efectivo', 'en_linea')),
+  pago_estado VARCHAR(20) NOT NULL DEFAULT 'pendiente'
+    CHECK (pago_estado IN ('pendiente', 'aprobado', 'rechazado')),
+  mp_preference_id TEXT,
+  mp_payment_id TEXT,
   atendido_por INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -55,9 +59,12 @@ CREATE TABLE IF NOT EXISTS pedido_detalles (
 CREATE INDEX IF NOT EXISTS pedido_detalles_pedido_idx ON pedido_detalles (pedido_id);
 
 -- ---------------------------------------------------------------------------
--- Para bases que ya tenian la tabla pedidos sin metodo_pago (idempotente).
+-- Para bases que ya tenian la tabla pedidos sin los campos de pago (idempotente).
 -- ---------------------------------------------------------------------------
 ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(20) NOT NULL DEFAULT 'efectivo';
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS pago_estado VARCHAR(20) NOT NULL DEFAULT 'pendiente';
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS mp_preference_id TEXT;
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS mp_payment_id TEXT;
 
 DO $$
 BEGIN
@@ -67,5 +74,12 @@ BEGIN
     ALTER TABLE pedidos
       ADD CONSTRAINT pedidos_metodo_pago_check
       CHECK (metodo_pago IN ('efectivo', 'en_linea'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'pedidos_pago_estado_check'
+  ) THEN
+    ALTER TABLE pedidos
+      ADD CONSTRAINT pedidos_pago_estado_check
+      CHECK (pago_estado IN ('pendiente', 'aprobado', 'rechazado'));
   END IF;
 END $$;

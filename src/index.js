@@ -28,6 +28,8 @@ app.use(
 app.use(express.json({ limit: '1mb' }));
 
 const testRoutes = require('./routes/test');
+// Webhook de MercadoPago: publico por diseño, MercadoPago no manda JWT.
+const mercadoPagoRoutes = require('./routes/mercadoPago');
 const pagosRoutes = require('./routes/pagos');
 const usuariosRoutes = require('./routes/usuarios');
 const alumnosRoutes = require('./routes/alumnos');
@@ -48,6 +50,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/api/test', testRoutes);
+app.use('/api/mercadopago', mercadoPagoRoutes);
 app.use('/api/usuarios', usuariosRoutes);
 
 app.use('/api/pagos', auth, pagosRoutes);

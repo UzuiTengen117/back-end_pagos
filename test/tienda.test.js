@@ -1,6 +1,7 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const { start, request, stop } = require('./helpers/http');
 const { install } = require('./helpers/mockPool');
@@ -346,7 +347,7 @@ test('GET /api/pedidos/:id: un estudiante no ve pedidos ajenos', async () => {
   assert.equal(res.status, 404);
   const detail = calls.filter((c) => c.text.includes('FROM pedidos')).pop();
   assert.ok(detail, 'debe ejecutarse la consulta del pedido');
-  assert.ok(detail.text.includes('a.usuario_id = $1'), 'el detalle del estudiante debe llevar scope');
+  assert.ok(detail.text.includes('a.usuario_id = $2'), 'el detalle del estudiante debe llevar scope');
   assert.equal(detail.params[1], 11);
 });
 
@@ -431,4 +432,133 @@ test('PUT /api/pedidos/:id/estado: sin stock al reactivar → 409 y revierte', a
   assert.equal(res.status, 409);
   assert.ok(calls.some((c) => c.text === 'ROLLBACK'));
   assert.ok(!calls.some((c) => c.text === 'COMMIT'));
+});
+
+// Helper: construye la firma MP valida sobre el manifest documentado.
+function firmaMercadoPago(id) {
+  const ts = Math.floor(Date.now() / 1000);
+  const requestId = 'test-req-123';
+  const secreto = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  const manifest = `id:${id};request-id:${requestId};ts:${ts};`;
+  const v1 = crypto.createHmac('sha256', secreto).update(manifest).digest('hex');
+  return { headers: { 'x-signature': `ts=${ts},v1=${v1}`, 'x-request-id': requestId } };
+}
+
+async function webhookMP(cuerpo, headers = {}) {
+  const srv = await start();
+  return fetch(`http://127.0.0.1:${srv.address().port}/api/mercadopago/webhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(cuerpo),
+  });
+}
+
+test('POST /api/pedidos/:id/pago/preferencia: pedido en efectivo → 409', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: 'FROM pedidos p', result: () => ({ rows: [{ id: 3, metodo_pago: 'efectivo', pago_estado: 'pendiente', total: '450.00' }] }) },
+  ]);
+  const res = await request('POST', '/api/pedidos/3/pago/preferencia', { token: token('estudiante'), body: {} });
+  assert.equal(res.status, 409);
+  assert.ok(res.data.message.includes('pago en línea'));
+});
+
+test('POST /api/pedidos/:id/pago/preferencia: pedido ya pagado → 409', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: 'FROM pedidos p', result: () => ({ rows: [{ id: 3, metodo_pago: 'en_linea', pago_estado: 'aprobado', total: '450.00' }] }) },
+  ]);
+  const res = await request('POST', '/api/pedidos/3/pago/preferencia', { token: token('estudiante'), body: {} });
+  assert.equal(res.status, 409);
+  assert.ok(res.data.message.includes('ya está pagado'));
+});
+
+test('POST /api/pedidos/:id/pago/preferencia: sin access token → 503 (pasarela sin configurar)', async () => {
+  await start();
+  const previo = process.env.MERCADO_PAGO_ACCESS_TOKEN;
+  delete process.env.MERCADO_PAGO_ACCESS_TOKEN;
+  try {
+    install([
+      PERMISOS_VACIO,
+      { match: 'FROM pedidos p', result: () => ({ rows: [{ id: 3, metodo_pago: 'en_linea', pago_estado: 'pendiente', total: '450.00' }] }) },
+      { match: 'FROM pedido_detalles d', result: () => ({ rows: [{ nombre: 'Dobok', cantidad: 1, precio_unitario: '450.00' }] }) },
+    ]);
+    const res = await request('POST', '/api/pedidos/3/pago/preferencia', { token: token('estudiante'), body: {} });
+    assert.equal(res.status, 503);
+    assert.ok(res.data.message.toLowerCase().includes('pasarela'));
+  } finally {
+    if (previo) process.env.MERCADO_PAGO_ACCESS_TOKEN = previo;
+  }
+});
+
+test('POST /api/pedidos/:id/pago/preferencia: estudiante con pedido ajeno → 404', async () => {
+  await start();
+  install([
+    PERMISOS_VACIO,
+    { match: 'FROM pedidos p', result: () => ({ rows: [] }) },
+  ]);
+  const res = await request('POST', '/api/pedidos/99/pago/preferencia', { token: token('estudiante'), body: {} });
+  assert.equal(res.status, 404);
+});
+
+test('POST /api/mercadopago/webhook: sin secreto configurado → 503', async () => {
+  await start();
+  const secreto = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  delete process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  try {
+    const res = await webhookMP({ type: 'payment', data: { id: '5001' } });
+    assert.equal(res.status, 503);
+  } finally {
+    if (secreto) process.env.MERCADO_PAGO_WEBHOOK_SECRET = secreto;
+  }
+});
+
+test('POST /api/mercadopago/webhook: firma incompleta → 400, no filtra motivos', async () => {
+  await start();
+  const secreto = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  process.env.MERCADO_PAGO_WEBHOOK_SECRET = 'secreto-de-prueba';
+  try {
+    const res = await webhookMP({ type: 'payment', data: { id: '5002' } }, { 'x-request-id': 'r-1' });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.ok(!body.message.includes('ts'), 'el 400 no debe filtrar el motivo');
+  } finally {
+    if (secreto) process.env.MERCADO_PAGO_WEBHOOK_SECRET = secreto;
+    else delete process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  }
+});
+
+test('POST /api/mercadopago/webhook: firma valida avanza hasta el pago (sin token → 503)', async () => {
+  await start();
+  const secreto = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  const tokenAcceso = process.env.MERCADO_PAGO_ACCESS_TOKEN;
+  process.env.MERCADO_PAGO_WEBHOOK_SECRET = 'secreto-de-prueba';
+  delete process.env.MERCADO_PAGO_ACCESS_TOKEN;
+  try {
+    const { headers } = firmaMercadoPago('5003');
+    const res = await webhookMP({ type: 'payment', data: { id: '5003' } }, headers);
+    assert.ok(res.status === 503 || res.status === 200, 'firma válida pasa la verificación — de aquí en adelante depende de la pasarela, no de la firma');
+  } finally {
+    if (secreto) process.env.MERCADO_PAGO_WEBHOOK_SECRET = secreto;
+    else delete process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+    if (tokenAcceso) process.env.MERCADO_PAGO_ACCESS_TOKEN = tokenAcceso;
+  }
+});
+
+test('POST /api/mercadopago/webhook: firma invalida → 400', async () => {
+  await start();
+  const secreto = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  process.env.MERCADO_PAGO_WEBHOOK_SECRET = 'secreto-de-prueba';
+  try {
+    const res = await webhookMP(
+      { type: 'payment', data: { id: '5004' } },
+      { 'x-signature': 'ts=1,v1=12ab34cd', 'x-request-id': 'r-evil' }
+    );
+    assert.equal(res.status, 400);
+  } finally {
+    if (secreto) process.env.MERCADO_PAGO_WEBHOOK_SECRET = secreto;
+    else delete process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  }
 });

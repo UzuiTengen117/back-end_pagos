@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { MercadoPagoConfig, Preference } = require('mercadopago');
 const { permite } = require('../middleware/permisos');
 const { internalError } = require('../utils/httpError');
 
@@ -14,6 +15,95 @@ function parseId(valor) {
   const id = Number(valor);
   return Number.isInteger(id) && id > 0 ? id : null;
 }
+
+function clienteMercadoPago() {
+  const token = process.env.MERCADO_PAGO_ACCESS_TOKEN;
+  if (!token) {
+    return null;
+  }
+  return new MercadoPagoConfig({ accessToken: token });
+}
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4200';
+const API_URL = process.env.API_URL || 'https://back-end-pagos-smoky.vercel.app';
+
+// Crea la preferencia de Checkout Pro para pagar un pedido en linea con tarjeta.
+// Un estudiante solo puede pagar sus propios pedidos; un profesor/admin cualquiera.
+router.post('/:id/pago/preferencia', async (req, res) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ message: 'Pedido no encontrado' });
+    }
+
+    const esEstudiante = req.user.rol === 'estudiante';
+    const scope = esEstudiante ? ' AND a.usuario_id = $2' : '';
+    const params = esEstudiante ? [id, req.user.id] : [id];
+
+    const result = await pool.query(
+      `SELECT p.id, p.metodo_pago, p.pago_estado, p.total
+         FROM pedidos p
+         JOIN alumnos a ON a.id = p.alumno_id
+        WHERE p.id = $1${scope}`,
+      params
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Pedido no encontrado' });
+    }
+    const pedido = result.rows[0];
+    if (pedido.metodo_pago !== 'en_linea') {
+      return res.status(409).json({ message: 'Este pedido no usa pago en línea' });
+    }
+    if (pedido.pago_estado === 'aprobado') {
+      return res.status(409).json({ message: 'El pedido ya está pagado' });
+    }
+
+    const detalles = await pool.query(
+      `SELECT pr.nombre, d.cantidad, d.precio_unitario
+         FROM pedido_detalles d
+         JOIN productos pr ON pr.id = d.producto_id
+        WHERE d.pedido_id = $1
+        ORDER BY d.id`,
+      [id]
+    );
+
+    const client = clienteMercadoPago();
+    if (!client) {
+      return res.status(503).json({ message: 'La pasarela de pago no está configurada' });
+    }
+
+    const items = detalles.rows.map((d) => ({
+      title: d.nombre,
+      quantity: Number(d.cantidad),
+      unit_price: Number(d.precio_unitario),
+      currency_id: 'MXN',
+    }));
+
+    const preferencia = new Preference(client);
+    const creada = await preferencia.create({
+      body: {
+        items,
+        external_reference: String(id),
+        auto_return: 'approved',
+        back_urls: {
+          success: `${FRONTEND_URL}/tienda?pago=ok`,
+          pending: `${FRONTEND_URL}/tienda?pago=pendiente`,
+          failure: `${FRONTEND_URL}/tienda?pago=fallido`,
+        },
+        notification_url: `${API_URL}/api/mercadopago/webhook`,
+      },
+    });
+
+    await pool.query('UPDATE pedidos SET mp_preference_id = $1, updated_at = NOW() WHERE id = $2', [
+      creada.id,
+      id,
+    ]);
+
+    res.status(201).json({ init_point: creada.init_point, preference_id: creada.id });
+  } catch (error) {
+    internalError(res, error);
+  }
+});
 
 // El pedido se arma siempre a nombre del alumno del usuario de la sesion: el id
 // del alumno nunca viaja en el body, asi un estudiante no puede pedir en
@@ -143,7 +233,8 @@ router.post('/', async (req, res) => {
 router.get('/', permite('tienda', 'ver'), async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.created_at, p.updated_at,
+      SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.pago_estado,
+             p.mp_preference_id, p.mp_payment_id, p.created_at, p.updated_at,
              a.nombre || ' ' || a.primer_apellido ||
              COALESCE(' ' || NULLIF(a.segundo_apellido, ''), '') AS alumno
         FROM pedidos p
@@ -161,7 +252,8 @@ router.get('/', permite('tienda', 'ver'), async (req, res) => {
 router.get('/mis', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.created_at, p.updated_at
+      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.pago_estado,
+             p.mp_preference_id, p.mp_payment_id, p.created_at, p.updated_at
          FROM pedidos p
          JOIN alumnos a ON a.id = p.alumno_id
         WHERE a.usuario_id = $1
@@ -183,11 +275,12 @@ router.get('/:id', async (req, res) => {
     }
 
     const esEstudiante = req.user.rol === 'estudiante';
-    const scope = esEstudiante ? ' AND a.usuario_id = $1' : '';
+    const scope = esEstudiante ? ' AND a.usuario_id = $2' : '';
     const params = esEstudiante ? [id, req.user.id] : [id];
 
     const result = await pool.query(
-      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.created_at, p.updated_at,
+      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.pago_estado,
+              p.mp_preference_id, p.mp_payment_id, p.created_at, p.updated_at,
               a.nombre || ' ' || a.primer_apellido ||
               COALESCE(' ' || NULLIF(a.segundo_apellido, ''), '') AS alumno
          FROM pedidos p
