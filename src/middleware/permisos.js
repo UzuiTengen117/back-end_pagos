@@ -101,6 +101,14 @@ const MODULOS_ACCIONES = {
       },
     },
   },
+  tienda: {
+    label: 'Tienda',
+    // El listado de productos activos y la creacion de pedidos son publicos
+    // para cualquier sesion iniciada (igual que becas o precios). Lo que se
+    // restringe es la gestion del catalogo y de los pedidos, que son decisiones
+    // solo del administrador.
+    acciones: { ver: 'Ver', crear: 'Crear', editar: 'Editar', eliminar: 'Eliminar' },
+  },
   asistencias: {
     label: 'Asistencias',
     subcategorias: {

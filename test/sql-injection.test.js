@@ -9,7 +9,7 @@ const { install } = require('./helpers/mockPool');
 after(() => stop());
 
 const ROUTES_DIR = path.join(__dirname, '..', 'src', 'routes');
-const ALLOWED_INTERPOLATIONS = ['SELECT_PAGOS', 'SELECT_COMPROBANTES', 'SELECT_REEMBOLSOS', 'USUARIO_FIELDS', 'where'];
+const ALLOWED_INTERPOLATIONS = ['SELECT_PAGOS', 'SELECT_COMPROBANTES', 'SELECT_REEMBOLSOS', 'USUARIO_FIELDS', 'SELECT_PRODUCTOS', 'where'];
 
 function extractTemplateQueries(fileContent) {
   const queries = [];
