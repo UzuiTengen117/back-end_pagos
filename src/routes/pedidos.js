@@ -35,7 +35,9 @@ function construirItems(body) {
 
   const acumulados = new Map();
   for (const item of crudo) {
-    const productoId = item && parseId(item.producto_id);
+    // Se aceptan producto_id (snake) y productoId (camel): el contrato de la UI
+    // es camelCase pero otros clientes pueden mandar el nombre de la columna.
+    const productoId = item && (parseId(item.producto_id) || parseId(item.productoId));
     const cantidad = item && Number(item.cantidad);
     if (!productoId) {
       return { error: 'Producto no válido' };
