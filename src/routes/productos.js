@@ -6,9 +6,11 @@ const { permite, tienePermiso } = require('../middleware/permisos');
 const { internalError } = require('../utils/httpError');
 
 const TIPOS_IMAGEN = ['image/jpeg', 'image/png', 'image/webp'];
-// Mismo limite que la foto de perfil: el despliegue es serverless y no hay
-// disco, la imagen viaja como data URL dentro de la fila.
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+// El frontend reescala la foto a <=1600px antes de mandarla, así el payload viaja
+// pequeño; este limite alto solo protege de archivos realmente gigantes y del
+// corte de respuesta de Vercel.
+const MAX_IMAGEN = 10 * 1024 * 1024;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGEN } });
 
 // Limites espejo de las columnas en MIGRACION_TIENDA.sql: sin esto un nombre
 // largo rebota como 22001 y el usuario ve un 500 en vez de un mensaje de campo.
@@ -22,8 +24,8 @@ function parseId(valor) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-// El listado NUNCA devuelve la imagen completa al admin en masa: a 2MB el
-// base64 ocupa 2.67MB por fila y Vercel corta la respuesta a 4.5MB. Se sirve el
+// El listado NUNCA devuelve la imagen completa al admin en masa: el base64
+// ocupa ~1.33x el tamaño original y Vercel corta la respuesta a 4.5MB. Se sirve el
 // thumbnail bajo el alias `imagen` (con fallback a la original por si una fila
 // vieja solo tiene la foto grande) y el detalle trae la imagen completa.
 const SELECT_PRODUCTOS = `
@@ -182,7 +184,7 @@ router.delete('/eliminar/:id', permite('tienda', 'eliminar'), async (req, res) =
 // La imagen va en su propia ruta y no dentro del PUT: si llegara en el JSON
 // pasaria por el limite de 1mb de express.json y ademas obligaria a reenviar
 // todos los campos en cada cambio de foto. El thumbnail lo genera el frontend:
-// es lo que consume el listado, y mandar la original a 2MB por fila rompe el
+// es lo que consume el listado, y mandar la original tal cual rompe el
 // corte de respuesta de Vercel.
 router.post('/:id/imagen', permite('tienda', 'editar'), upload.fields([
   { name: 'imagen', maxCount: 1 },
@@ -226,7 +228,7 @@ router.post('/:id/imagen', permite('tienda', 'editar'), upload.fields([
     res.json({ imagen: thumbDataUrl || dataUrl });
   } catch (error) {
     if (error && error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ message: 'La imagen no puede superar 2MB' });
+      return res.status(400).json({ message: 'La imagen no puede superar 10MB' });
     }
     internalError(res, error);
   }
