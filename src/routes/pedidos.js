@@ -5,6 +5,7 @@ const { permite } = require('../middleware/permisos');
 const { internalError } = require('../utils/httpError');
 
 const ESTADOS = ['pendiente', 'preparacion', 'entregado', 'cancelado'];
+const METODOS_PAGO = ['efectivo', 'en_linea'];
 const MAX_ITEMS = 50;
 const MAX_CANTIDAD = 999;
 const MAX_NOTAS = 1000;
@@ -66,6 +67,11 @@ router.post('/', async (req, res) => {
 
     const notas = req.body.notas ? String(req.body.notas).trim().slice(0, MAX_NOTAS) : null;
 
+    const metodoPago = req.body && req.body.metodo_pago ? String(req.body.metodo_pago).trim() : 'efectivo';
+    if (!METODOS_PAGO.includes(metodoPago)) {
+      return res.status(400).json({ message: 'Método de pago no válido. Permitidos: efectivo, en_linea' });
+    }
+
     const client = await pool.connect();
     let pedido;
     try {
@@ -102,10 +108,10 @@ router.post('/', async (req, res) => {
       const total = detalles.reduce((suma, d) => suma + Number(d.precio) * d.cantidad, 0);
 
       const pedidoResult = await client.query(
-        `INSERT INTO pedidos (alumno_id, estado, total, notas)
-         VALUES ($1, 'pendiente', $2, $3)
+        `INSERT INTO pedidos (alumno_id, estado, total, notas, metodo_pago)
+         VALUES ($1, 'pendiente', $2, $3, $4)
          RETURNING *`,
-        [alumnoId, total.toFixed(2), notas]
+        [alumnoId, total.toFixed(2), notas, metodoPago]
       );
       pedido = pedidoResult.rows[0];
 
@@ -137,7 +143,7 @@ router.post('/', async (req, res) => {
 router.get('/', permite('tienda', 'ver'), async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.created_at, p.updated_at,
+      SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.created_at, p.updated_at,
              a.nombre || ' ' || a.primer_apellido ||
              COALESCE(' ' || NULLIF(a.segundo_apellido, ''), '') AS alumno
         FROM pedidos p
@@ -155,7 +161,7 @@ router.get('/', permite('tienda', 'ver'), async (req, res) => {
 router.get('/mis', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.created_at, p.updated_at
+      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.created_at, p.updated_at
          FROM pedidos p
          JOIN alumnos a ON a.id = p.alumno_id
         WHERE a.usuario_id = $1
@@ -181,7 +187,7 @@ router.get('/:id', async (req, res) => {
     const params = esEstudiante ? [id, req.user.id] : [id];
 
     const result = await pool.query(
-      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.created_at, p.updated_at,
+      `SELECT p.id, p.alumno_id, p.estado, p.total, p.notas, p.metodo_pago, p.created_at, p.updated_at,
               a.nombre || ' ' || a.primer_apellido ||
               COALESCE(' ' || NULLIF(a.segundo_apellido, ''), '') AS alumno
          FROM pedidos p

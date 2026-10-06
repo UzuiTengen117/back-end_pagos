@@ -213,6 +213,7 @@ test('POST /api/pedidos: el alumno pide y el stock baja en una transacción', as
   const nota = calls.find((c) => c.text.includes('INSERT INTO pedidos'));
   assert.equal(nota.params[1], '450.00');
   assert.equal(nota.params[2], 'Dobok talla 3');
+  assert.equal(nota.params[3], 'efectivo', 'sin metodo_pago se registra pago en efectivo por defecto');
 });
 
 test('POST /api/pedidos: suma cantidades y calcula el total', async () => {
@@ -243,6 +244,32 @@ test('POST /api/pedidos: suma cantidades y calcula el total', async () => {
   assert.equal(detalles[1].params[3], '120.00');
   const pedido = calls.find((c) => c.text.includes('INSERT INTO pedidos'));
   assert.equal(pedido.params[1], '1020.00', 'total = 2*450 + 120');
+});
+
+test('POST /api/pedidos: el metodo de pago en_linea se guarda y un metodo invalido se rechaza', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'SELECT id FROM alumnos WHERE usuario_id = $1', result: () => ({ rows: [{ id: 7 }] }) },
+    { match: 'SET stock = stock - $2', result: () => ({ rows: [{ nombre: 'Dobok', precio: '450.00' }] }) },
+    { match: 'INSERT INTO pedidos', result: () => ({ rows: [{ id: 1 }] }) },
+    { match: 'INSERT INTO pedido_detalles', result: () => ({ rows: [{ id: 1 }] }) },
+  ]);
+
+  const enLinea = await request('POST', '/api/pedidos', {
+    token: token('estudiante'),
+    body: { items: [{ producto_id: 1, cantidad: 1 }], metodo_pago: 'en_linea' },
+  });
+  assert.equal(enLinea.status, 201);
+  const pedido = calls.find((c) => c.text.includes('INSERT INTO pedidos'));
+  assert.equal(pedido.params[3], 'en_linea', 'el metodo elegido debe viajar al INSERT');
+
+  const invalido = await request('POST', '/api/pedidos', {
+    token: token('estudiante'),
+    body: { items: [{ producto_id: 1, cantidad: 1 }], metodo_pago: 'transaccion' },
+  });
+  assert.equal(invalido.status, 400);
+  assert.ok(invalido.data.message.includes('Método de pago no válido'));
 });
 
 test('POST /api/pedidos: stock insuficiente revierte todo el pedido', async () => {
