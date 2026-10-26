@@ -7,7 +7,7 @@
 !.env.example
 
 # Las pruebas no se ejecutan en produccion
-test/
+tests/
 tests/
 **/*.test.js
 
