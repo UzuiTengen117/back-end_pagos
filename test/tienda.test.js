@@ -434,6 +434,79 @@ test('PUT /api/pedidos/:id/estado: sin stock al reactivar → 409 y revierte', a
   assert.ok(!calls.some((c) => c.text === 'COMMIT'));
 });
 
+test('DELETE /api/pedidos/:id: devuelve el stock y borra el pedido', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    {
+      match: 'SELECT estado FROM pedidos WHERE id = $1 FOR UPDATE',
+      result: () => ({ rows: [{ estado: 'pendiente' }] }),
+    },
+    { match: 'UPDATE productos p', result: () => ({ rows: [] }) },
+    { match: 'DELETE FROM pedidos WHERE id = $1', result: () => ({ rows: [{ id: 4 }] }) },
+  ]);
+
+  const res = await request('DELETE', '/api/pedidos/4', { token: token('admin') });
+  assert.equal(res.status, 200);
+  assert.match(res.data.message, /eliminado/i);
+
+  const stock = calls.filter((c) => c.text.includes('UPDATE productos p'));
+  assert.equal(stock.length, 1, 'debe devolver el stock antes de borrar');
+  assert.equal(stock[0].params[0], 4);
+
+  const borrado = calls.filter((c) => c.text === 'DELETE FROM pedidos WHERE id = $1');
+  assert.equal(borrado.length, 1);
+  assert.equal(borrado[0].params[0], 4);
+
+  assert.ok(calls.some((c) => c.text === 'COMMIT'));
+});
+
+test('DELETE /api/pedidos/:id: un pedido cancelado no vuelve a sumar stock', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    {
+      match: 'SELECT estado FROM pedidos WHERE id = $1 FOR UPDATE',
+      result: () => ({ rows: [{ estado: 'cancelado' }] }),
+    },
+    { match: 'UPDATE productos p', result: () => ({ rows: [] }) },
+    { match: 'DELETE FROM pedidos WHERE id = $1', result: () => ({ rows: [{ id: 4 }] }) },
+  ]);
+
+  const res = await request('DELETE', '/api/pedidos/4', { token: token('admin') });
+  assert.equal(res.status, 200);
+  assert.ok(
+    !calls.some((c) => c.text.includes('UPDATE productos p')),
+    'el stock ya se había devuelto al cancelar'
+  );
+  assert.ok(calls.some((c) => c.text === 'DELETE FROM pedidos WHERE id = $1'));
+  assert.ok(calls.some((c) => c.text === 'COMMIT'));
+});
+
+test('DELETE /api/pedidos/:id: pedido inexistente → 404 y rollback', async () => {
+  await start();
+  const { calls } = install([
+    PERMISOS_VACIO,
+    { match: 'SELECT estado FROM pedidos WHERE id = $1 FOR UPDATE', result: () => ({ rows: [] }) },
+  ]);
+
+  const res = await request('DELETE', '/api/pedidos/99', { token: token('admin') });
+  assert.equal(res.status, 404);
+  assert.ok(calls.some((c) => c.text === 'ROLLBACK'));
+  assert.ok(!calls.some((c) => c.text === 'COMMIT'));
+  assert.ok(!calls.some((c) => c.text === 'DELETE FROM pedidos WHERE id = $1'));
+});
+
+test('DELETE /api/pedidos/:id: un estudiante sin permiso recibe 403', async () => {
+  await start();
+  const { calls } = install([PERMISOS_VACIO]);
+
+  const res = await request('DELETE', '/api/pedidos/4', { token: token('estudiante') });
+  assert.equal(res.status, 403);
+  assert.ok(!calls.some((c) => c.text === 'BEGIN'));
+  assert.ok(!calls.some((c) => c.text === 'DELETE FROM pedidos WHERE id = $1'));
+});
+
 // Helper: construye la firma MP valida sobre el manifest documentado.
 function firmaMercadoPago(id) {
   const ts = Math.floor(Date.now() / 1000);

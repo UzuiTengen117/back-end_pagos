@@ -307,6 +307,54 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// Eliminar un pedido. Si el stock sigue descontado (todo estado distinto de
+// cancelado) se devuelve a la tienda antes de borrar; los renglones se van por
+// ON DELETE CASCADE. El bloqueo FOR UPDATE evita que una cancelacion simultanea
+// devuelva el stock dos veces.
+router.delete('/:id', permite('tienda', 'eliminar'), async (req, res) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ message: 'Pedido no encontrado' });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const pedidoResult = await client.query(
+        'SELECT estado FROM pedidos WHERE id = $1 FOR UPDATE',
+        [id]
+      );
+      if (pedidoResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'Pedido no encontrado' });
+      }
+
+      if (pedidoResult.rows[0].estado !== 'cancelado') {
+        await client.query(
+          `UPDATE productos p
+              SET stock = p.stock + d.cantidad, updated_at = NOW()
+             FROM pedido_detalles d
+            WHERE d.pedido_id = $1 AND p.id = d.producto_id`,
+          [id]
+        );
+      }
+
+      await client.query('DELETE FROM pedidos WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      res.json({ message: 'Pedido eliminado' });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    internalError(res, error);
+  }
+});
+
 // Cambio de estado por el administrador. Cancelar devuelve el stock; salir de
 // cancelado lo vuelve a descontar (y si ya no hay, se rechaza con 409).
 router.put('/:id/estado', permite('tienda', 'editar'), async (req, res) => {

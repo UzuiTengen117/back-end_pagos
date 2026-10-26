@@ -138,6 +138,7 @@ const DEFAULTS = {
     'solicitudes_reembolso:ver', 'solicitudes_reembolso:aprobar', 'solicitudes_reembolso:rechazar',
     'precios:crear', 'precios:editar', 'precios:eliminar',
     'becas:crear', 'becas:editar', 'becas:eliminar',
+    'tienda:ver', 'tienda:crear', 'tienda:editar', 'tienda:eliminar',
     'asistencias:registrar:tomar_asistencia', 'asistencias:ver:tomar_asistencia', 'asistencias:reportar:reporte_asistencias', 'asistencias:ver:reporte_asistencias', 'asistencias:eliminar:reporte_asistencias',
     'eventos:crear:eventos', 'eventos:editar:eventos', 'eventos:eliminar:eventos', 'eventos:ver:reporte_eventos',
     'examenes:crear:examenes', 'examenes:editar:examenes', 'examenes:eliminar:examenes', 'examenes:ver:reporte_examenes',

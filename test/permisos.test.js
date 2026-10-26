@@ -92,7 +92,7 @@ test('GET /api/permisos/defaults/:rol devuelve los permisos base', async () => {
 
   const prof = await request('GET', '/api/permisos/defaults/profesor', { token: token('admin') });
   assert.equal(prof.status, 200);
-  for (const p of ['pagos:crear', 'comprobantes:editar', 'alumnos:eliminar', 'precios:crear', 'becas:crear']) {
+  for (const p of ['pagos:crear', 'comprobantes:editar', 'alumnos:eliminar', 'precios:crear', 'becas:crear', 'tienda:ver', 'tienda:crear', 'tienda:editar', 'tienda:eliminar']) {
     assert.ok(prof.data.permisos.includes(p), `profesor debe tener ${p}`);
   }
   assert.ok(!prof.data.permisos.includes('solicitudes_reembolso:editar'));
