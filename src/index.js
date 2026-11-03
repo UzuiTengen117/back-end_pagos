@@ -7,21 +7,10 @@ const { auth } = require('./middleware/auth');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:4200,http://localhost:3000,https://pagos-zeta.vercel.app,https://sistema-de-pagos-amtkd.vercel.app,https://back-end-pagos-smoky.vercel.app')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
 app.use(
   cors({
-    origin(origin, cb) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        return cb(null, true);
-      }
-      const error = new Error('Origen no permitido');
-      error.status = 403;
-      cb(error);
-    },
+    origin: true,
+    credentials: true,
   })
 );
 
